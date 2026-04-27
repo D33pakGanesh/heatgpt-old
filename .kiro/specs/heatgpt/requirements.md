@@ -375,3 +375,27 @@ satellite processing, PostGIS for spatial data storage, and a Node.js/Express RE
 8. WHEN multiple requests for the same LGA and date range occur concurrently, THE API SHALL prevent duplicate Google Earth Engine API calls by checking the cache before each request.
 9. THE `gee_layers` table SHALL use composite indexes on `(lga_id, layer_type)` to optimize cache lookup queries.
 10. WHEN satellite layer data is cached, THE API SHALL store both the proxied tile URL (for client use) and the raw Earth Engine URL (for reference) in separate columns.
+
+---
+
+### Requirement 22: Tree Segmentation
+
+**User Story:** As a user, I want to see individual trees and tree clusters detected from high-resolution satellite imagery overlaid on the selected LGA, so that I can understand how tree cover relates to urban heat patterns in that area.
+
+#### Acceptance Criteria
+
+1. WHEN `runTreeSegmentation` is called with a valid `BBox` and `DateRange`, THE EarthEngineService SHALL query `COPERNICUS/S2_SR_HARMONIZED`, build a median composite, run SNIC object-based segmentation (`ee.Algorithms.Image.Segmentation.SNIC`), and extract vegetation objects where mean NDVI > 0.35 and area > 10 m² as individual polygon features.
+2. WHEN generating segment polygons, THE EarthEngineService SHALL return a GeoJSON FeatureCollection where each feature is a Polygon with properties `{ area_m2, confidence, ndvi_mean }` — not a raster mask.
+3. WHEN tree segmentation computation completes, THE system SHALL compute and store `treeCount`, `totalAreaKm2`, `avgConfidence`, and `coveragePct` (percentage of LGA area covered by segments) in the `tree_segments` table in PostGIS.
+4. WHEN `GET /api/lga/:id/tree-segmentation` is called, THE API SHALL apply the same DB-first caching pattern as heat stats: return cached `tree_segments` rows if present, otherwise compute via Earth Engine, bulk-insert the results, and return them.
+5. WHEN `GET /api/lga/:id/tree-segmentation` returns successfully, THE response SHALL include `treeCount`, `totalAreaKm2`, `avgConfidence`, `coveragePct`, `tileUrl` (HR satellite basemap), `bbox`, `segments` (GeoJSON FeatureCollection), `dateRangeStart`, `dateRangeEnd`, and `processedAt`.
+6. WHEN tree segmentation results are available for the selected LGA, THE ChatService SHALL include `treeCount`, `coveragePct`, and `totalAreaKm2` in the HeatGPT system prompt so the AI can reason about tree cover and its relationship to UHI.
+7. WHEN an LGA is selected and heat stats are loaded, THE SidePanel SHALL display a "Tree Segmentation" toggle button alongside the existing "LST Heatmap", "NDVI Vegetation", and "None" buttons.
+8. WHEN the "Tree Segmentation" toggle is active, THE SidePanel SHALL display stat cards for `treeCount`, `totalAreaKm2`, and `coveragePct`, and SHALL trigger rendering of the HR satellite basemap and segment polygon overlay on the map.
+9. WHEN the tree segmentation view is active, THE MapView SHALL render two layers: (1) a high-resolution Sentinel-2 true-colour satellite basemap tile clipped to the LGA polygon using the existing SVG clip-mask pattern, and (2) a Leaflet GeoJSON layer of segment polygons rendered on top with semi-transparent green fill and solid green stroke.
+10. WHEN the tree segmentation view is active, THE LGA boundary polygon SHALL remain visible as a thin outline on top of both the basemap and segment layers.
+11. WHEN segment data is stored in `gee_layers`, THE `layer_type` SHALL be `'tree_segmentation'`; the `avg_lst_celsius`, `avg_ndvi`, and `uhi_intensity` columns SHALL be NULL for segmentation rows.
+12. IF no Sentinel-2 imagery is available for the requested LGA and date range, THEN THE API SHALL return HTTP 422 with `{ "error": "No Sentinel-2 imagery available for this area and period" }`.
+13. IF the EarthEngineService is unavailable during segmentation, THEN THE API SHALL return HTTP 503 with `{ "error": "Earth Engine service unavailable" }`.
+14. IF SNIC segmentation produces zero segments after the vegetation filter, THEN THE API SHALL return HTTP 200 with `treeCount: 0` and an empty `segments` FeatureCollection.
+15. THE `tree_segments` table SHALL have a GIST spatial index on `geom` and a composite index on `(lga_id, date_range_start, date_range_end)` to support efficient spatial queries and cache lookups.

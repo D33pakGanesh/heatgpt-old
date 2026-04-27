@@ -426,3 +426,119 @@ Stack: TypeScript (Node.js/Express backend, React frontend), PostgreSQL + PostGI
     - **Property 32: Composite index used**
     - For any cache lookup query, the database query plan uses `idx_gee_layers_lookup` index
     - **Validates: Requirements 21.9**
+
+
+- [ ] 21. Tree Segmentation (GeoAI)
+  - [ ] 21.1 Add `tree_segments` table to database schema
+    - Add DDL to `backend/src/db/schema.sql`:
+      ```sql
+      CREATE TABLE IF NOT EXISTS tree_segments (
+          id               SERIAL PRIMARY KEY,
+          lga_id           VARCHAR(10) NOT NULL REFERENCES lgas(lga_id),
+          geom             GEOMETRY(Polygon, 4326) NOT NULL,
+          area_m2          NUMERIC(12, 4) NOT NULL,
+          confidence       NUMERIC(5, 4) NOT NULL,
+          ndvi_mean        NUMERIC(6, 4),
+          date_range_start DATE NOT NULL,
+          date_range_end   DATE NOT NULL,
+          processed_at     TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_tree_segments_lga
+          ON tree_segments(lga_id, date_range_start, date_range_end);
+      CREATE INDEX IF NOT EXISTS idx_tree_segments_geom
+          ON tree_segments USING GIST(geom);
+      ```
+    - Run migration against the live database
+    - _Requirements: 22.3, 22.15_
+
+  - [ ] 21.2 Add `TreeSegment` and `TreeSegmentationResult` types to `backend/src/types.ts`
+    - Add `TreeSegment` interface: `id`, `lgaId`, `geom`, `areaM2`, `confidence`, `ndviMean`, `processedAt`
+    - Add `TreeSegmentationResult` interface: `lgaId`, `lgaName`, `treeCount`, `totalAreaKm2`, `avgConfidence`, `coveragePct`, `tileUrl`, `bbox`, `segments` (GeoJSON FeatureCollection), `dateRangeStart`, `dateRangeEnd`, `processedAt`
+    - Extend `GeeLayerType` to `'lst' | 'ndvi' | 'tree_segmentation'`
+    - _Requirements: 22.5_
+
+  - [ ] 21.3 Add `runTreeSegmentation` to `earthEngineService.ts`
+    - Use `COPERNICUS/S2_SR_HARMONIZED`, filter by bounds + date range + `CLOUDY_PIXEL_PERCENTAGE < 20`, build median composite
+    - Compute NDVI band and add to composite as input to SNIC
+    - Run `ee.Algorithms.Image.Segmentation.SNIC({ size: 10, compactness: 0.5, connectivity: 8 })`
+    - Filter resulting segments: `ndvi_mean > 0.35` AND `area_m2 > 10`
+    - Call `reduceToVectors` to export segment polygons as GeoJSON FeatureCollection with `{ area_m2, confidence, ndvi_mean }` properties
+    - Compute summary stats: `treeCount`, `totalAreaKm2`, `avgConfidence`, `coveragePct`
+    - Generate HR true-colour basemap tile (B4/B3/B2) via EE Thumbnails API (same pattern as `getMapTileUrl`)
+    - Return `{ eeUrl, segmentGeoJSON, treeCount, totalAreaKm2, avgConfidence, coveragePct }`
+    - Raise error if Sentinel-2 collection is empty; return empty FeatureCollection if zero segments after filter
+    - _Requirements: 22.1, 22.2, 22.3_
+
+  - [ ] 21.4 Create `backend/src/services/treeSegmentationService.ts`
+    - Implement `getTreeSegmentation(lgaId, dateRange)`: query `tree_segments` for cached rows; on cache miss call `runTreeSegmentation`, bulk-insert segment rows, insert `gee_layers` row (`layer_type='tree_segmentation'`), return `TreeSegmentationResult`
+    - Implement `computeAndStoreSegmentation(lgaId, bbox, areaKm2, dateRange)`: call EE, build proxied `tileUrl` (`/api/lga/:id/tile-image?type=tree_segmentation&...`), bulk-insert `tree_segments`, insert `gee_layers`, return result
+    - Reconstruct `TreeSegmentationResult` from cached DB rows (aggregate stats + GeoJSON from stored geometries)
+    - Throw 404 if LGA not found; throw 503 on EE failure
+    - _Requirements: 22.3, 22.4, 22.5, 22.11_
+
+  - [ ] 21.5 Add `GET /api/lga/:id/tree-segmentation` route to `backend/src/routes/lga.ts`
+    - Parse optional `start` and `end` query params; default to 90-day window
+    - Delegate to `treeSegmentationService.getTreeSegmentation`
+    - Return HTTP 200 with `TreeSegmentationResult` JSON; handle 404, 422, 503, and zero-segment 200 per design
+    - Update `/api/lga/:id/tile-image` proxy to accept `type=tree_segmentation`
+    - _Requirements: 22.4, 22.5, 22.12, 22.13, 22.14_
+
+  - [ ] 21.6 Extend `chatService.ts` to include segmentation context in system prompt
+    - Add optional `segmentation?: { treeCount: number; totalAreaKm2: number; coveragePct: number; avgConfidence: number }` parameter to `buildSystemPrompt`
+    - When provided, append tree count, coverage %, area, and UHI relationship context to the prompt
+    - Function must remain pure
+    - _Requirements: 22.6_
+
+  - [ ] 21.7 Update `SidePanel.tsx` to add Tree Segmentation toggle and stat cards
+    - Add `'tree_segmentation'` to the `activeLayer` state type
+    - Add "Tree Segmentation" button to the layer toggle row alongside LST/NDVI/None
+    - Add `useQuery` for `/api/lga/:id/tree-segmentation` (enabled when `activeLayer === 'tree_segmentation'`)
+    - When data is loaded, show three stat cards: "Trees Detected" (`treeCount`), "Tree Cover" (`coveragePct`%), "Total Area" (`totalAreaKm2` km²)
+    - Emit `onTreeSegmentationChange({ tileUrl, segments, bbox, type: 'tree_segmentation', dateRangeStart, dateRangeEnd })` when data arrives
+    - Pass segmentation stats to `ChatInterface` for forwarding to the chat API
+    - _Requirements: 22.7, 22.8_
+
+  - [ ] 21.8 Update `MapView.tsx` to render HR basemap + segment polygon layer
+    - When `activeTileLayer.type === 'tree_segmentation'`:
+      - Render HR satellite basemap PNG as SVG clip-masked image overlay (same pattern as LST/NDVI)
+      - Add a Leaflet `GeoJSON` layer on top of the basemap rendering `activeTileLayer.segments` with semi-transparent green fill (`#22c55e`, opacity 0.4) and solid green stroke
+      - Keep LGA boundary polygon visible as a thin outline on top of both layers
+    - Remove segment GeoJSON layer when layer type changes away from `'tree_segmentation'`
+    - _Requirements: 22.9, 22.10_
+
+  - [ ] 21.9 Update `App.tsx` for `tree_segmentation` layer type
+    - Extend `TileLayer` type: add `type: 'lst' | 'ndvi' | 'tree_segmentation'` and `segments?: GeoJSON.FeatureCollection | null`
+    - Add `onTreeSegmentationChange` handler that sets `activeTileLayer` with segments included
+    - Pass `activeTileLayer` (including segments) to `MapView`
+    - _Requirements: 22.9_
+
+  - [ ] 21.10 Update `ChatInterface.tsx` and `POST /api/chat` to forward segmentation context
+    - Add optional `segmentationStats?: { treeCount: number; totalAreaKm2: number; coveragePct: number; avgConfidence: number }` to the chat request body
+    - Update `POST /api/chat` route to pass `segmentationStats` to `buildSystemPrompt`
+    - Update `ChatInterface` to include `segmentationStats` in the request when available
+    - _Requirements: 22.6_
+
+  - [ ]* 21.11 Write property test for segment polygon validity (Property 34)
+    - **Property 34: Segment polygons are valid GeoJSON**
+    - For any mocked SNIC output, all returned features have Polygon geometry, `area_m2 > 10`, `confidence ∈ [0,1]`, `ndvi_mean > 0.35`
+    - **Validates: Requirements 22.1, 22.2**
+
+  - [ ]* 21.12 Write property test for coveragePct range (Property 35)
+    - **Property 35: coveragePct is in [0, 100]**
+    - For any mocked segment list and `lgaAreaKm2 > 0`, `coveragePct ∈ [0, 100]`
+    - **Validates: Requirements 22.3**
+
+  - [ ]* 21.13 Write property test for totalAreaKm2 derivation (Property 36)
+    - **Property 36: totalAreaKm2 derivation correctness**
+    - For any segment list, `totalAreaKm2 = sum(area_m2) / 1,000,000`
+    - **Validates: Requirements 22.3**
+
+  - [ ]* 21.14 Write property test for tree segmentation cache hit (Property 37)
+    - **Property 37: Tree segmentation cache hit avoids Earth Engine**
+    - For any LGA with cached `tree_segments` rows, `getTreeSegmentation` returns cached data without invoking EarthEngineService
+    - **Validates: Requirements 22.4**
+
+  - [ ]* 21.15 Write property test for buildSystemPrompt with segmentation context (Property 39)
+    - **Property 39: buildSystemPrompt includes segmentation context when provided**
+    - For any valid `HeatStats`, non-empty `lgaName`, and finite segmentation values, prompt is non-empty, deterministic, and contains `treeCount`, `coveragePct`, `totalAreaKm2`
+    - **Validates: Requirements 22.6**

@@ -1,11 +1,11 @@
-# Design Document: HeatGPT
+﻿# Design Document: HeatGPT
 
 ## Overview
 
 HeatGPT is a cloud-based GIS web application that enables users to explore Urban Heat Islands (UHI)
 across Australian Local Government Areas (LGAs). Users interact with an interactive map, click on
 any LGA to retrieve heat analysis statistics (land surface temperature, NDVI, heat island intensity),
-and engage with an AI chat interface — HeatGPT — that explains the heat patterns in plain language.
+and engage with an AI chat interface â€” HeatGPT â€” that explains the heat patterns in plain language.
 
 The system follows a SatGPT/FloodGPT-style UX: a full-screen map with a slide-in panel for data
 and chat. Processing is driven by Google Earth Engine for satellite-derived metrics, stored in
@@ -42,7 +42,7 @@ graph TD
 
 ```mermaid
 graph LR
-    subgraph GCP_VM["Ubuntu VM — Google Cloud Platform"]
+    subgraph GCP_VM["Ubuntu VM â€” Google Cloud Platform"]
         FE["React Frontend (Nginx)"]
         BE["Express API (Node.js, port 3001)"]
         PG["PostgreSQL + PostGIS (port 5432)"]
@@ -290,7 +290,7 @@ CREATE TABLE heat_stats (
     lga_id          VARCHAR(10) NOT NULL REFERENCES lgas(lga_id),
     avg_lst_celsius NUMERIC(6, 3),           -- Average Land Surface Temperature
     avg_ndvi        NUMERIC(6, 4),           -- NDVI (-1 to 1)
-    uhi_intensity   NUMERIC(6, 3),           -- LST delta vs regional mean (°C)
+    uhi_intensity   NUMERIC(6, 3),           -- LST delta vs regional mean (Â°C)
     data_source     VARCHAR(50),             -- e.g. 'landsat8', 'landsat9'
     date_range_start DATE,
     date_range_end   DATE,
@@ -309,7 +309,7 @@ interface HeatStats {
   lgaName: string
   avgLstCelsius: number       // Average land surface temperature
   avgNdvi: number             // NDVI index (-1 to 1)
-  uhiIntensity: number        // Delta vs regional mean (°C)
+  uhiIntensity: number        // Delta vs regional mean (Â°C)
   dataSource: string
   dateRangeStart: string      // ISO date
   dateRangeEnd: string        // ISO date
@@ -352,7 +352,7 @@ OUTPUT: heatStats: HeatStats
 BEGIN
   ASSERT lgaId IS NOT NULL AND lgaId IS NOT EMPTY
 
-  cached ← database.query(
+  cached â† database.query(
     "SELECT * FROM heat_stats WHERE lga_id = $1", [lgaId]
   )
 
@@ -360,13 +360,13 @@ BEGIN
     RETURN mapRowToHeatStats(cached)
   END IF
 
-  lga ← database.query("SELECT * FROM lgas WHERE lga_id = $1", [lgaId])
+  lga â† database.query("SELECT * FROM lgas WHERE lga_id = $1", [lgaId])
 
   IF lga IS NULL THEN
     RAISE Error("LGA not found: " + lgaId)
   END IF
 
-  metrics ← computeEarthEngineMetrics(lga.bbox, defaultDateRange())
+  metrics â† computeEarthEngineMetrics(lga.bbox, defaultDateRange())
 
   UPSERT heat_stats SET
     avg_lst_celsius = metrics.lst,
@@ -405,10 +405,10 @@ BEGIN
   ASSERT bbox.south < bbox.north
   ASSERT dateRange.start < dateRange.end
 
-  region ← ee.Geometry.Rectangle([bbox.west, bbox.south, bbox.east, bbox.north])
+  region â† ee.Geometry.Rectangle([bbox.west, bbox.south, bbox.east, bbox.north])
 
   // Land Surface Temperature from Landsat thermal band
-  landsatCollection ← ee.ImageCollection("LANDSAT/LC09/C02/T1_L2")
+  landsatCollection â† ee.ImageCollection("LANDSAT/LC09/C02/T1_L2")
     .filterBounds(region)
     .filterDate(dateRange.start, dateRange.end)
     .filter(ee.Filter.lt("CLOUD_COVER", 20))
@@ -417,33 +417,33 @@ BEGIN
     RAISE Error("No Landsat imagery available for date range")
   END IF
 
-  lstImage ← landsatCollection
+  lstImage â† landsatCollection
     .select("ST_B10")
     .mean()
     .multiply(0.00341802)
     .add(149.0)
     .subtract(273.15)   // Convert Kelvin to Celsius
 
-  lst ← lstImage.reduceRegion(ee.Reducer.mean(), region, scale=30)
+  lst â† lstImage.reduceRegion(ee.Reducer.mean(), region, scale=30)
                .get("ST_B10")
 
   // NDVI from Sentinel-2
-  s2Collection ← ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+  s2Collection â† ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
     .filterBounds(region)
     .filterDate(dateRange.start, dateRange.end)
     .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 20))
 
-  ndviImage ← s2Collection.median()
+  ndviImage â† s2Collection.median()
     .normalizedDifference(["B8", "B4"])
 
-  ndvi ← ndviImage.reduceRegion(ee.Reducer.mean(), region, scale=10)
+  ndvi â† ndviImage.reduceRegion(ee.Reducer.mean(), region, scale=10)
                   .get("nd")
 
   // UHI intensity: LGA LST minus regional mean LST
-  australiaBbox ← ee.Geometry.Rectangle([113.0, -44.0, 154.0, -10.0])
-  regionalLST ← lstImage.reduceRegion(ee.Reducer.mean(), australiaBbox, scale=1000)
+  australiaBbox â† ee.Geometry.Rectangle([113.0, -44.0, 154.0, -10.0])
+  regionalLST â† lstImage.reduceRegion(ee.Reducer.mean(), australiaBbox, scale=1000)
                         .get("ST_B10")
-  uhi ← lst - regionalLST
+  uhi â† lst - regionalLST
 
   ASSERT lst IS NOT NULL
   ASSERT ndvi >= -1 AND ndvi <= 1
@@ -479,25 +479,25 @@ BEGIN
   ASSERT heatStats IS NOT NULL
   ASSERT lgaName IS NOT EMPTY
 
-  uhiDescription ← CASE
+  uhiDescription â† CASE
     WHEN heatStats.uhiIntensity > 3.0  THEN "severe urban heat island"
     WHEN heatStats.uhiIntensity > 1.5  THEN "moderate urban heat island"
     WHEN heatStats.uhiIntensity > 0.0  THEN "mild urban heat island"
     ELSE                                    "no significant heat island effect"
   END CASE
 
-  vegetationDescription ← CASE
+  vegetationDescription â† CASE
     WHEN heatStats.avgNdvi > 0.5  THEN "dense vegetation"
     WHEN heatStats.avgNdvi > 0.3  THEN "moderate vegetation"
     WHEN heatStats.avgNdvi > 0.1  THEN "sparse vegetation"
     ELSE                               "minimal vegetation or urban surface"
   END CASE
 
-  systemPrompt ← FORMAT(
+  systemPrompt â† FORMAT(
     "You are HeatGPT, an expert in urban heat islands and climate science. " +
     "The user is exploring {lgaName} in Australia. " +
-    "Key data: Average LST = {lst}°C, NDVI = {ndvi} ({vegDesc}), " +
-    "UHI Intensity = {uhi}°C ({uhiDesc}). " +
+    "Key data: Average LST = {lst}Â°C, NDVI = {ndvi} ({vegDesc}), " +
+    "UHI Intensity = {uhi}Â°C ({uhiDesc}). " +
     "Data period: {start} to {end}. " +
     "Answer questions clearly and suggest mitigation strategies where relevant.",
     lgaName, heatStats.avgLstCelsius, heatStats.avgNdvi, vegetationDescription,
@@ -524,7 +524,7 @@ END
 
 ## Key Functions with Formal Specifications
 
-### `GET /api/lgas` — Express Route Handler
+### `GET /api/lgas` â€” Express Route Handler
 
 ```typescript
 // Returns all LGA boundaries as GeoJSON FeatureCollection
@@ -542,7 +542,7 @@ async function getLgas(req: Request, res: Response): Promise<void>
 
 ---
 
-### `GET /api/lga/:id/heat` — Express Route Handler
+### `GET /api/lga/:id/heat` â€” Express Route Handler
 
 ```typescript
 async function getLgaHeat(req: Request, res: Response): Promise<void>
@@ -560,7 +560,7 @@ async function getLgaHeat(req: Request, res: Response): Promise<void>
 
 ---
 
-### `POST /api/chat` — Express Route Handler
+### `POST /api/chat` â€” Express Route Handler
 
 ```typescript
 interface ChatRequest {
@@ -586,7 +586,7 @@ async function postChat(req: Request, res: Response): Promise<void>
 
 ---
 
-### `isStale(processedAt, maxAgeDays)` — HeatService
+### `isStale(processedAt, maxAgeDays)` â€” HeatService
 
 ```typescript
 function isStale(processedAt: Date, maxAgeDays: number = 7): boolean
@@ -603,7 +603,7 @@ function isStale(processedAt: Date, maxAgeDays: number = 7): boolean
 
 ---
 
-### `computeUHI(lgaLST, regionMeanLST)` — EarthEngineService
+### `computeUHI(lgaLST, regionMeanLST)` â€” EarthEngineService
 
 ```typescript
 function computeUHI(lgaLST: number, regionMeanLST: number): number
@@ -707,17 +707,17 @@ The ABS LGA boundary dataset is distributed as an ESRI Shapefile (`.shp` + `.dbf
 
 ```
 .shp file
-    │
-    ▼
+    â”‚
+    â–¼
 shp2pgsql (reproject + generate SQL)
-    │
-    ▼
+    â”‚
+    â–¼
 psql (execute SQL against PostGIS)
-    │
-    ▼
+    â”‚
+    â–¼
 lgas table (raw geometry loaded)
-    │
-    ▼
+    â”‚
+    â–¼
 Post-processing SQL:
   - Populate bbox from ST_Envelope components
   - Populate area_km2 from ST_Area(geom::geography)
@@ -727,17 +727,17 @@ Post-processing SQL:
 ### shp2pgsql Command
 
 ```bash
-# For GDA2020 source (EPSG:7844 → EPSG:4326)
+# For GDA2020 source (EPSG:7844 â†’ EPSG:4326)
 shp2pgsql -s 7844:4326 -I -u /path/to/LGA_2022_AUST_GDA2020.shp lgas_staging | psql -U postgres -d heatgpt
 
-# For GDA94 source (EPSG:4283 → EPSG:4326)
+# For GDA94 source (EPSG:4283 â†’ EPSG:4326)
 shp2pgsql -s 4283:4326 -I -u /path/to/LGA_2022_AUST_GDA94.shp lgas_staging | psql -U postgres -d heatgpt
 ```
 
 **Flag reference:**
-- `-s <src>:4326` — reproject from source CRS to WGS84
-- `-I` — create a GIST spatial index on the geometry column
-- `-u` — upsert mode (generates `INSERT ... ON CONFLICT DO UPDATE`)
+- `-s <src>:4326` â€” reproject from source CRS to WGS84
+- `-I` â€” create a GIST spatial index on the geometry column
+- `-u` â€” upsert mode (generates `INSERT ... ON CONFLICT DO UPDATE`)
 
 ### Field Mapping
 
@@ -800,7 +800,7 @@ async function importShapefile(shpPath: string): Promise<ImportResult>
 
 ## Correctness Properties
 
-*A property is a characteristic or behavior that should hold true across all valid executions of a system — essentially, a formal statement about what the system should do. Properties serve as the bridge between human-readable specifications and machine-verifiable correctness guarantees.*
+*A property is a characteristic or behavior that should hold true across all valid executions of a system â€” essentially, a formal statement about what the system should do. Properties serve as the bridge between human-readable specifications and machine-verifiable correctness guarantees.*
 
 ### Property 1: Heat stats response shape and value ranges
 
@@ -828,7 +828,7 @@ async function importShapefile(shpPath: string): Promise<ImportResult>
 
 ### Property 4: isStale correctness
 
-*For any* `processedAt` date and positive integer `maxAgeDays`, `isStale(processedAt, maxAgeDays)` returns `true` if and only if the elapsed time since `processedAt` exceeds `maxAgeDays × 86400000` milliseconds, and produces no side effects.
+*For any* `processedAt` date and positive integer `maxAgeDays`, `isStale(processedAt, maxAgeDays)` returns `true` if and only if the elapsed time since `processedAt` exceeds `maxAgeDays Ã— 86400000` milliseconds, and produces no side effects.
 
 **Validates: Requirements 4.1, 4.2, 4.4**
 
@@ -860,7 +860,7 @@ async function importShapefile(shpPath: string): Promise<ImportResult>
 
 ### Property 8: UHI description thresholds
 
-*For any* `HeatStats` object, `buildSystemPrompt` includes exactly the correct UHI description: "severe urban heat island" when `uhiIntensity > 3.0`, "moderate urban heat island" when `1.5 < uhiIntensity ≤ 3.0`, "mild urban heat island" when `0.0 < uhiIntensity ≤ 1.5`, and "no significant heat island effect" when `uhiIntensity ≤ 0.0`.
+*For any* `HeatStats` object, `buildSystemPrompt` includes exactly the correct UHI description: "severe urban heat island" when `uhiIntensity > 3.0`, "moderate urban heat island" when `1.5 < uhiIntensity â‰¤ 3.0`, "mild urban heat island" when `0.0 < uhiIntensity â‰¤ 1.5`, and "no significant heat island effect" when `uhiIntensity â‰¤ 0.0`.
 
 **Validates: Requirements 10.2, 10.3, 10.4, 10.5**
 
@@ -868,7 +868,7 @@ async function importShapefile(shpPath: string): Promise<ImportResult>
 
 ### Property 9: Vegetation description thresholds
 
-*For any* `HeatStats` object, `buildSystemPrompt` includes exactly the correct vegetation description: "dense vegetation" when `avgNdvi > 0.5`, "moderate vegetation" when `0.3 < avgNdvi ≤ 0.5`, "sparse vegetation" when `0.1 < avgNdvi ≤ 0.3`, and "minimal vegetation or urban surface" when `avgNdvi ≤ 0.1`.
+*For any* `HeatStats` object, `buildSystemPrompt` includes exactly the correct vegetation description: "dense vegetation" when `avgNdvi > 0.5`, "moderate vegetation" when `0.3 < avgNdvi â‰¤ 0.5`, "sparse vegetation" when `0.1 < avgNdvi â‰¤ 0.3`, and "minimal vegetation or urban surface" when `avgNdvi â‰¤ 0.1`.
 
 **Validates: Requirements 10.6, 10.7, 10.8, 10.9**
 
@@ -876,7 +876,7 @@ async function importShapefile(shpPath: string): Promise<ImportResult>
 
 ### Property 10: Chat API returns non-empty answer for valid inputs
 
-*For any* valid `lgaId`, non-empty `question` (≤ 500 characters), and valid `HeatStats` object, `POST /api/chat` returns HTTP 200 with `{ "answer": string }` where `answer` is non-empty.
+*For any* valid `lgaId`, non-empty `question` (â‰¤ 500 characters), and valid `HeatStats` object, `POST /api/chat` returns HTTP 200 with `{ "answer": string }` where `answer` is non-empty.
 
 **Validates: Requirements 9.1**
 
@@ -970,7 +970,7 @@ async function importShapefile(shpPath: string): Promise<ImportResult>
 
 ### Property 22: Import idempotence
 
-*For any* Shapefile, running the import pipeline twice produces the same number of rows in the `lgas` table as running it once — no duplicate records are created.
+*For any* Shapefile, running the import pipeline twice produces the same number of rows in the `lgas` table as running it once â€” no duplicate records are created.
 
 **Validates: Requirements 15.6**
 
@@ -1063,8 +1063,8 @@ fc.assert(fc.property(
 
 ## Performance Considerations
 
-- LGA GeoJSON for all ~550 Australian LGAs can be large (~5–15 MB uncompressed). Serve with gzip compression and consider simplifying geometry precision to 4 decimal places for the map layer.
-- Earth Engine computations are slow (5–30 seconds). On-demand computation should only occur for LGAs with no cached data. All other requests are served from PostGIS in < 100ms.
+- LGA GeoJSON for all ~550 Australian LGAs can be large (~5â€“15 MB uncompressed). Serve with gzip compression and consider simplifying geometry precision to 4 decimal places for the map layer.
+- Earth Engine computations are slow (5â€“30 seconds). On-demand computation should only occur for LGAs with no cached data. All other requests are served from PostGIS in < 100ms.
 - PostGIS spatial index on `lgas.geom` ensures fast bounding-box and point-in-polygon queries.
 - Frontend uses React Query (or SWR) to cache API responses client-side and avoid redundant requests during a session.
 
@@ -1083,30 +1083,30 @@ fc.assert(fc.property(
 ## Dependencies
 
 ### Frontend
-- `react`, `react-dom` — UI framework
-- `leaflet`, `react-leaflet` — interactive map
-- `@tanstack/react-query` — data fetching and caching
-- `tailwindcss` — utility-first styling
+- `react`, `react-dom` â€” UI framework
+- `leaflet`, `react-leaflet` â€” interactive map
+- `@tanstack/react-query` â€” data fetching and caching
+- `tailwindcss` â€” utility-first styling
 
 ### Backend
-- `express` — HTTP server
-- `pg` — PostgreSQL client
-- `@google/earthengine` — Earth Engine JavaScript API
-- `openai` (or `@google-cloud/vertexai`) — LLM API client
-- `express-rate-limit` — rate limiting
-- `zod` — request validation
-- `multer` — multipart file upload handling (for Shapefile import endpoint)
+- `express` â€” HTTP server
+- `pg` â€” PostgreSQL client
+- `@google/earthengine` â€” Earth Engine JavaScript API
+- `openai` (or `@google-cloud/vertexai`) â€” LLM API client
+- `express-rate-limit` â€” rate limiting
+- `zod` â€” request validation
+- `multer` â€” multipart file upload handling (for Shapefile import endpoint)
 
 ### Infrastructure
 - PostgreSQL 15+ with PostGIS 3.x
 - Nginx (reverse proxy + static file serving)
 - Node.js 20 LTS
-- `shp2pgsql` / `ogr2ogr` — PostGIS Shapefile import tooling (bundled with PostGIS)
+- `shp2pgsql` / `ogr2ogr` â€” PostGIS Shapefile import tooling (bundled with PostGIS)
 
 ### Data Sources
-- Landsat 9 Collection 2 Tier 1 Level 2 (`LANDSAT/LC09/C02/T1_L2`) — thermal band ST_B10
-- Sentinel-2 SR Harmonized (`COPERNICUS/S2_SR_HARMONIZED`) — bands B4 (Red), B8 (NIR)
-- ABS LGA boundary dataset (ESRI Shapefile, GDA2020/EPSG:7844 or GDA94/EPSG:4283) — reprojected to WGS84 and imported via `shp2pgsql`
+- Landsat 9 Collection 2 Tier 1 Level 2 (`LANDSAT/LC09/C02/T1_L2`) â€” thermal band ST_B10
+- Sentinel-2 SR Harmonized (`COPERNICUS/S2_SR_HARMONIZED`) â€” bands B4 (Red), B8 (NIR)
+- ABS LGA boundary dataset (ESRI Shapefile, GDA2020/EPSG:7844 or GDA94/EPSG:4283) â€” reprojected to WGS84 and imported via `shp2pgsql`
 
 
 ---
@@ -1115,7 +1115,7 @@ fc.assert(fc.property(
 
 ### Overview
 
-The Map PDF Export feature adds a client-side "Export PDF" button to `MapControls` that captures the current map view and generates a formatted A4 landscape PDF using `html2canvas` and `jsPDF`. No backend changes are required — all processing happens in the browser.
+The Map PDF Export feature adds a client-side "Export PDF" button to `MapControls` that captures the current map view and generates a formatted A4 landscape PDF using `html2canvas` and `jsPDF`. No backend changes are required â€” all processing happens in the browser.
 
 ### Architecture
 
@@ -1158,7 +1158,7 @@ export async function exportMapPdf(options: ExportPdfOptions): Promise<void>
 
 The function must not mutate any of its inputs.
 
-#### `MapControls.tsx` — additions
+#### `MapControls.tsx` â€” additions
 
 New props added to `MapControlsProps`:
 
@@ -1173,31 +1173,31 @@ interface MapControlsProps {
 }
 ```
 
-`scaleInfo` is already computed inside `MapControls` via `getScaleInfo()` — it is passed directly to `exportMapPdf` without threading it through props.
+`scaleInfo` is already computed inside `MapControls` via `getScaleInfo()` â€” it is passed directly to `exportMapPdf` without threading it through props.
 
 The "Export PDF" button is rendered only when `activeTileLayer` is non-null, positioned alongside the north arrow (top-right corner). During export it shows a spinner and is `disabled`.
 
-#### `App.tsx` — additions
+#### `App.tsx` â€” additions
 
-- Derive `lgaName` from the React Query cache: `qc.getQueryData<GeoJSON.FeatureCollection>(['lgas'])` → find feature by `selectedLgaId` → `feature.properties?.lga_name`.
+- Derive `lgaName` from the React Query cache: `qc.getQueryData<GeoJSON.FeatureCollection>(['lgas'])` â†’ find feature by `selectedLgaId` â†’ `feature.properties?.lga_name`.
 - Pass `lgaName`, `dateRangeStart`, and `dateRangeEnd` as new props to `<MapControls>`.
 - `dateRangeStart` / `dateRangeEnd` come from the active tile layer's query parameters (already tracked in `SidePanel` state and surfaced via `onTileLayerChange`). Extend the `TileLayer` type with optional `dateRangeStart?: string` and `dateRangeEnd?: string` fields.
 
-### PDF Layout (A4 landscape — 297 × 210 mm)
+### PDF Layout (A4 landscape â€” 297 Ã— 210 mm)
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│  Title bar (8 mm)                                               │
-│  "{lgaName} — LST Heatmap"  |  "{lgaName} — NDVI Vegetation"   │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  Map image (html2canvas capture of #map, scaled to page width)  │
-│  ~170 mm tall                                                   │
-│                                                                 │
-├─────────────────────────────────────────────────────────────────┤
-│  Bottom strip (32 mm)                                           │
-│  Legend swatches + labels | Scale bar | Data sources text       │
-└─────────────────────────────────────────────────────────────────┘
+â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+â”‚  Title bar (8 mm)                                               â”‚
+â”‚  "{lgaName} â€” LST Heatmap"  |  "{lgaName} â€” NDVI Vegetation"   â”‚
+â”œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¤
+â”‚                                                                 â”‚
+â”‚  Map image (html2canvas capture of #map, scaled to page width)  â”‚
+â”‚  ~170 mm tall                                                   â”‚
+â”‚                                                                 â”‚
+â”œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¤
+â”‚  Bottom strip (32 mm)                                           â”‚
+â”‚  Legend swatches + labels | Scale bar | Data sources text       â”‚
+â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
 ```
 
 **Title bar**: 8 mm tall, dark background (`#1e293b`), white bold text, font size 13 pt.
@@ -1205,13 +1205,13 @@ The "Export PDF" button is rendered only when `activeTileLayer` is non-null, pos
 **Map image**: `html2canvas(document.getElementById('map'), { useCORS: true, scale: 2 })` captures the full `#map` div including the SVG clip-masked satellite overlay. The canvas is scaled to fill the page width (297 mm) while preserving aspect ratio, up to a maximum height of ~170 mm.
 
 **Bottom strip** (three columns, left-to-right):
-1. Legend — colour swatches (4 × 3 mm each) with labels, reusing `LST_PALETTE` / `NDVI_PALETTE` constants from `MapControls.tsx` (exported or duplicated in `exportPdf.ts`).
-2. Scale bar — tick marks at both ends, horizontal bar, distance label centred above, drawn with `jsPDF` line/text primitives using `scaleInfo.label`.
-3. Data sources — two lines of 7 pt text:
+1. Legend â€” colour swatches (4 Ã— 3 mm each) with labels, reusing `LST_PALETTE` / `NDVI_PALETTE` constants from `MapControls.tsx` (exported or duplicated in `exportPdf.ts`).
+2. Scale bar â€” tick marks at both ends, horizontal bar, distance label centred above, drawn with `jsPDF` line/text primitives using `scaleInfo.label`.
+3. Data sources â€” two lines of 7 pt text:
    - Line 1: `"Satellite data: Landsat 9 (LST)"` or `"Satellite data: Sentinel-2 (NDVI)"`
-   - Line 2: `"Date range: {dateRangeStart} – {dateRangeEnd}"`
+   - Line 2: `"Date range: {dateRangeStart} â€“ {dateRangeEnd}"`
 
-**Filename**: `{lga-name-kebab}-{layer-type}-{YYYY-MM-DD}.pdf` — all lowercase, spaces replaced with hyphens, generated at download time using `new Date().toISOString().slice(0, 10)`.
+**Filename**: `{lga-name-kebab}-{layer-type}-{YYYY-MM-DD}.pdf` â€” all lowercase, spaces replaced with hyphens, generated at download time using `new Date().toISOString().slice(0, 10)`.
 
 ### Data Models
 
@@ -1225,14 +1225,14 @@ type TileLayer = {
   type: 'lst' | 'ndvi'
   bbox?: { west: number; south: number; east: number; north: number }
   lgaGeometry?: GeoJSON.Geometry | null
-  dateRangeStart?: string   // NEW — ISO date string
-  dateRangeEnd?: string     // NEW — ISO date string
+  dateRangeStart?: string   // NEW â€” ISO date string
+  dateRangeEnd?: string     // NEW â€” ISO date string
 }
 ```
 
 ### Correctness Properties
 
-*A property is a characteristic or behavior that should hold true across all valid executions of a system — essentially, a formal statement about what the system should do. Properties serve as the bridge between human-readable specifications and machine-verifiable correctness guarantees.*
+*A property is a characteristic or behavior that should hold true across all valid executions of a system â€” essentially, a formal statement about what the system should do. Properties serve as the bridge between human-readable specifications and machine-verifiable correctness guarantees.*
 
 #### Property 23: PDF title contains LGA name and layer label
 
@@ -1284,11 +1284,11 @@ type TileLayer = {
 ### Testing Strategy
 
 **Unit / property tests** (fast-check):
-- Property 23: title composition — generate random `lgaName` + `layerType`, call a pure `buildTitle(lgaName, layerType)` helper, assert output contains both.
-- Property 24: filename generation — generate random `lgaName` strings, call a pure `buildFilename(lgaName, layerType, date)` helper, assert lowercase/kebab/`.pdf` invariants.
-- Property 25: scale label inclusion — generate random `scaleInfo`, mock jsPDF, assert `text()` was called with the label.
-- Property 26: data source text — generate random date ranges and layer types, mock jsPDF, assert correct source name and dates appear.
-- Property 27: input immutability — deep-clone inputs before call, assert deep equality after.
+- Property 23: title composition â€” generate random `lgaName` + `layerType`, call a pure `buildTitle(lgaName, layerType)` helper, assert output contains both.
+- Property 24: filename generation â€” generate random `lgaName` strings, call a pure `buildFilename(lgaName, layerType, date)` helper, assert lowercase/kebab/`.pdf` invariants.
+- Property 25: scale label inclusion â€” generate random `scaleInfo`, mock jsPDF, assert `text()` was called with the label.
+- Property 26: data source text â€” generate random date ranges and layer types, mock jsPDF, assert correct source name and dates appear.
+- Property 27: input immutability â€” deep-clone inputs before call, assert deep equality after.
 
 **Example-based tests**:
 - Button hidden when `activeTileLayer` is null (Requirement 20.2).
@@ -1393,15 +1393,15 @@ interface GeeLayerService {
 
 **Changes to `GET /api/lga/:id/tiles`**:
 - Replace in-memory `tileUrlCache` Map with DB lookup via `geeLayerService`
-- Flow: Check DB → Return if exists → Fetch from GEE + auto-save → Return
-- Remove manual cache expiry logic (55 min TTL) — DB persistence is permanent
+- Flow: Check DB â†’ Return if exists â†’ Fetch from GEE + auto-save â†’ Return
+- Remove manual cache expiry logic (55 min TTL) â€” DB persistence is permanent
 
 **Removed endpoints**:
-- `POST /api/lga/:id/export` — deleted (automatic persistence replaces manual export)
+- `POST /api/lga/:id/export` â€” deleted (automatic persistence replaces manual export)
 
 **Kept endpoints**:
-- `GET /api/lga/:id/saved-layers` — retrieve all cached layers for an LGA
-- `DELETE /api/lga/:id/saved-layers/:layerId` — delete a cached layer
+- `GET /api/lga/:id/saved-layers` â€” retrieve all cached layers for an LGA
+- `DELETE /api/lga/:id/saved-layers/:layerId` â€” delete a cached layer
 
 #### Frontend Changes
 
@@ -1412,7 +1412,7 @@ interface GeeLayerService {
 
 ### Data Models
 
-No schema changes required — `gee_layers` table already exists with all needed fields:
+No schema changes required â€” `gee_layers` table already exists with all needed fields:
 
 ```sql
 CREATE TABLE IF NOT EXISTS gee_layers (
@@ -1453,7 +1453,7 @@ BEGIN
   ASSERT dateRange.start < dateRange.end
 
   // Check cache first
-  cached ← database.query(
+  cached â† database.query(
     "SELECT * FROM gee_layers 
      WHERE lga_id = $1 AND layer_type = $2 
        AND date_range_start = $3 AND date_range_end = $4",
@@ -1464,15 +1464,15 @@ BEGIN
     RETURN mapRowToGeeLayerRecord(cached)
   END IF
 
-  // Cache miss — fetch LGA bbox
-  lga ← database.query("SELECT * FROM lgas WHERE lga_id = $1", [lgaId])
+  // Cache miss â€” fetch LGA bbox
+  lga â† database.query("SELECT * FROM lgas WHERE lga_id = $1", [lgaId])
 
   IF lga IS NULL THEN
     RAISE Error("LGA not found: " + lgaId)
   END IF
 
   // Compute and store
-  geeLayer ← computeAndStoreGeeLayer(lgaId, layerType, lga.bbox, dateRange)
+  geeLayer â† computeAndStoreGeeLayer(lgaId, layerType, lga.bbox, dateRange)
 
   RETURN geeLayer
 END
@@ -1510,25 +1510,25 @@ BEGIN
   ASSERT dateRange.start < dateRange.end
 
   // Fetch tile URL from Earth Engine
-  eeUrl ← getMapTileUrl(layerType, bbox, dateRange)
+  eeUrl â† getMapTileUrl(layerType, bbox, dateRange)
 
   // Build proxied tile URL
-  tileUrl ← FORMAT(
+  tileUrl â† FORMAT(
     "/api/lga/{lgaId}/tile-image?type={layerType}&start={start}&end={end}",
     lgaId, layerType, dateRange.start, dateRange.end
   )
 
-  // Compute metrics (optional — may be null if not needed)
-  avgLstCelsius ← NULL
-  avgNdvi ← NULL
-  uhiIntensity ← NULL
+  // Compute metrics (optional â€” may be null if not needed)
+  avgLstCelsius â† NULL
+  avgNdvi â† NULL
+  uhiIntensity â† NULL
 
   IF layerType = 'lst' THEN
-    avgLstCelsius ← computeLST(bbox, dateRange)
-    regionalMeanLST ← computeRegionalMeanLST(dateRange)
-    uhiIntensity ← computeUHI(avgLstCelsius, regionalMeanLST)
+    avgLstCelsius â† computeLST(bbox, dateRange)
+    regionalMeanLST â† computeRegionalMeanLST(dateRange)
+    uhiIntensity â† computeUHI(avgLstCelsius, regionalMeanLST)
   ELSE IF layerType = 'ndvi' THEN
-    avgNdvi ← computeNDVI(bbox, dateRange)
+    avgNdvi â† computeNDVI(bbox, dateRange)
   END IF
 
   // Insert into database
@@ -1576,7 +1576,7 @@ END
 
 ### Key Functions with Formal Specifications
 
-#### `getGeeLayer(lgaId, layerType, dateRange)` — geeLayerService
+#### `getGeeLayer(lgaId, layerType, dateRange)` â€” geeLayerService
 
 ```typescript
 async function getGeeLayer(
@@ -1601,7 +1601,7 @@ async function getGeeLayer(
 
 ---
 
-#### `computeAndStoreGeeLayer(lgaId, layerType, bbox, dateRange)` — geeLayerService
+#### `computeAndStoreGeeLayer(lgaId, layerType, bbox, dateRange)` â€” geeLayerService
 
 ```typescript
 async function computeAndStoreGeeLayer(
@@ -1628,7 +1628,7 @@ async function computeAndStoreGeeLayer(
 
 ---
 
-#### `isGeeLayerStale(exportedAt, maxAgeDays)` — geeLayerService
+#### `isGeeLayerStale(exportedAt, maxAgeDays)` â€” geeLayerService
 
 ```typescript
 function isGeeLayerStale(exportedAt: Date, maxAgeDays: number = 7): boolean
@@ -1713,7 +1713,7 @@ export async function getGeeLayer(
     return mapRowToGeeLayerRecord(cached)
   }
 
-  // Cache miss — verify LGA exists
+  // Cache miss â€” verify LGA exists
   const lga = await getLgaById(lgaId)
   if (!lga) {
     const err = new Error(`LGA not found: ${lgaId}`) as any
@@ -1801,14 +1801,14 @@ function mapRowToGeeLayerRecord(row: Record<string, unknown>): GeeLayerRecord {
 <button onClick={handleExport}>Export to DB</button>
 
 // AFTER:
-// (button removed — automatic persistence replaces manual export)
+// (button removed â€” automatic persistence replaces manual export)
 ```
 
 ---
 
 ### Correctness Properties
 
-*A property is a characteristic or behavior that should hold true across all valid executions of a system — essentially, a formal statement about what the system should do. Properties serve as the bridge between human-readable specifications and machine-verifiable correctness guarantees.*
+*A property is a characteristic or behavior that should hold true across all valid executions of a system â€” essentially, a formal statement about what the system should do. Properties serve as the bridge between human-readable specifications and machine-verifiable correctness guarantees.*
 
 #### Property 28: Cache hit avoids Earth Engine
 
@@ -1852,11 +1852,11 @@ function mapRowToGeeLayerRecord(row: Record<string, unknown>): GeeLayerRecord {
 
 #### Property 33: Concurrent requests prevent duplicate EE calls
 
-*For any* two concurrent requests for the same LGA ID, layer type, and date range, at most one request invokes the EarthEngineService — the second request waits for the first to complete and returns the cached result.
+*For any* two concurrent requests for the same LGA ID, layer type, and date range, at most one request invokes the EarthEngineService â€” the second request waits for the first to complete and returns the cached result.
 
 **Validates: Requirements 21.8**
 
-**Note**: This property requires transaction-level locking or a distributed lock (e.g., Redis) to prevent race conditions. The current implementation does not enforce this — it's a future enhancement.
+**Note**: This property requires transaction-level locking or a distributed lock (e.g., Redis) to prevent race conditions. The current implementation does not enforce this â€” it's a future enhancement.
 
 ---
 
@@ -1958,16 +1958,16 @@ fc.assert(fc.property(
 ### Performance Considerations
 
 - Cache lookup query uses composite index `idx_gee_layers_lookup` for fast retrieval (< 10ms)
-- Earth Engine computations are slow (5–30 seconds) but only occur once per LGA + date range combination
+- Earth Engine computations are slow (5â€“30 seconds) but only occur once per LGA + date range combination
 - Subsequent requests for the same LGA + date range are served from PostGIS in < 100ms
-- In-memory `tileUrlCache` Map is removed — all caching is now DB-backed for persistence across server restarts
+- In-memory `tileUrlCache` Map is removed â€” all caching is now DB-backed for persistence across server restarts
 - Concurrent requests for the same LGA may result in duplicate Earth Engine calls (acceptable for now; future enhancement: distributed lock)
 
 ---
 
 ### Security Considerations
 
-- No new security concerns — existing Earth Engine authentication and database parameterised queries apply
+- No new security concerns â€” existing Earth Engine authentication and database parameterised queries apply
 - `gee_layers` table is only accessible via authenticated API endpoints
 - Raw Earth Engine URLs (`ee_url`) may expire after 55 minutes but are stored for reference
 - Proxied tile URLs (`tile_url`) remain valid indefinitely as they route through the backend proxy
@@ -1976,9 +1976,9 @@ fc.assert(fc.property(
 
 ### Dependencies
 
-No new dependencies required — uses existing:
-- `pg` — PostgreSQL client
-- `@google/earthengine` — Earth Engine JavaScript API
+No new dependencies required â€” uses existing:
+- `pg` â€” PostgreSQL client
+- `@google/earthengine` â€” Earth Engine JavaScript API
 - Existing `earthEngineService.ts` functions (`getMapTileUrl`, `computeLST`, `computeNDVI`, etc.)
 - Existing `lgaService.ts` functions (`getLgaById`)
 
@@ -2004,3 +2004,466 @@ ON gee_layers(lga_id, layer_type, date_range_start, date_range_end);
 **Backward compatibility**:
 - Existing `gee_layers` rows created via manual export remain valid and are used by the new cache lookup
 - No data migration required
+
+
+---
+
+## Tree Segmentation (Feature Addition)
+
+### Overview
+
+The Tree Segmentation feature adds GeoAI-based individual tree detection to the existing HeatGPT workflow. After a user selects an LGA, the system uses high-resolution satellite imagery (Google Earth Engine's NAIP or Sentinel-2 at 10 m) combined with GEE's built-in object-based segmentation (`ee.Algorithms.Image.Segmentation.SNIC`) to detect individual trees or tree clusters within the LGA boundary. Results are stored as **vector polygon geometries** in PostGIS â€” not raster masks â€” enabling spatial queries, area calculations, and density analysis. The feature is additive and does not modify the existing LST/NDVI/UHI pipeline.
+
+**Key distinction from spectral thresholding:** This approach uses image segmentation to group spatially coherent high-vegetation pixels into discrete polygon objects, producing individual tree or tree-cluster footprints rather than a binary pixel mask.
+
+### Architecture
+
+```mermaid
+graph TD
+    User["Browser (React + Leaflet)"]
+    SP["SidePanel.tsx\n(Tree Segmentation toggle + stat cards)"]
+    MV["MapView.tsx\n(HR satellite basemap + segment polygons)"]
+    API["Express API\nGET /api/lga/:id/tree-segmentation"]
+    TSS["treeSegmentationService.ts\n(DB-first cache)"]
+    EES["earthEngineService.ts\n(runTreeSegmentation)"]
+    DB["PostgreSQL + PostGIS\ntree_segments table"]
+    EE["Google Earth Engine\nSNIC segmentation + S2 imagery"]
+    Chat["chatService.ts\n(system prompt enrichment)"]
+
+    User --> SP
+    SP -->|"GET /api/lga/:id/tree-segmentation"| API
+    API --> TSS
+    TSS -->|"cache miss"| EES
+    EES --> EE
+    TSS --> DB
+    API --> Chat
+    SP --> MV
+    MV -->|"HR basemap + GeoJSON polygons"| User
+```
+
+### Sequence Diagram
+
+```mermaid
+sequenceDiagram
+    participant U as User (Browser)
+    participant SP as SidePanel
+    participant MV as MapView
+    participant API as Express API
+    participant TSS as treeSegmentationService
+    participant DB as PostGIS
+    participant EE as Earth Engine
+
+    U->>SP: Click "Tree Segmentation" toggle
+
+    SP->>API: GET /api/lga/:id/tree-segmentation?start=...&end=...
+    API->>TSS: getTreeSegmentation(lgaId, dateRange)
+    TSS->>DB: SELECT * FROM tree_segments WHERE lga_id=$1 AND date_range_start=$2 AND date_range_end=$3
+    alt Cache hit
+        DB-->>TSS: Cached segment rows
+        TSS-->>API: TreeSegmentationResult
+        API-->>SP: { segments: GeoJSON, stats, tileUrl, bbox }
+    else Cache miss
+        TSS->>EE: runTreeSegmentation(bbox, dateRange)
+        EE-->>TSS: { segmentGeoJSON, tileUrl, stats }
+        TSS->>DB: INSERT INTO tree_segments (bulk) + INSERT INTO gee_layers (layer_type='tree_segmentation')
+        TSS-->>API: TreeSegmentationResult
+        API-->>SP: { segments: GeoJSON, stats, tileUrl, bbox }
+    end
+    SP->>SP: Show stat cards (treeCount, totalAreaKm2, avgConfidence)
+    SP->>MV: emit onTreeSegmentationChange({ segments, tileUrl, bbox })
+    MV->>MV: Load HR satellite basemap tile
+    MV->>MV: Render segment polygons as GeoJSON layer on top
+    MV-->>U: Map shows HR imagery + tree polygons + LGA boundary
+```
+
+### Components and Interfaces
+
+#### New Backend Service: `backend/src/services/treeSegmentationService.ts`
+
+**Purpose**: DB-first caching for tree segmentation results, mirroring `geeLayerService.ts` and `heatService.ts` patterns.
+
+**Interface**:
+```typescript
+interface TreeSegment {
+  id: number
+  lgaId: string
+  geom: GeoJSON.Polygon | GeoJSON.MultiPolygon  // individual tree/cluster footprint
+  areaM2: number          // segment area in square metres
+  confidence: number      // segmentation confidence score [0, 1]
+  ndviMean: number        // mean NDVI within segment (informational, not threshold)
+  processedAt: string
+}
+
+interface TreeSegmentationResult {
+  lgaId: string
+  lgaName: string
+  treeCount: number           // number of detected tree segments
+  totalAreaKm2: number        // total area of all segments in km²
+  avgConfidence: number       // mean confidence across all segments
+  coveragePct: number         // % of LGA area covered by segments
+  tileUrl: string             // proxied HR satellite basemap tile URL
+  bbox: BBox
+  segments: GeoJSON.FeatureCollection  // all segment polygons as GeoJSON
+  dateRangeStart: string
+  dateRangeEnd: string
+  processedAt: string
+}
+
+interface TreeSegmentationService {
+  getTreeSegmentation(lgaId: string, dateRange: DateRange): Promise<TreeSegmentationResult>
+  computeAndStoreSegmentation(lgaId: string, bbox: BBox, areaKm2: number, dateRange: DateRange): Promise<TreeSegmentationResult>
+}
+```
+
+#### New API Endpoint: `GET /api/lga/:id/tree-segmentation`
+
+Added to `backend/src/routes/lga.ts`.
+
+**Query params**: `start` (ISO date), `end` (ISO date) — both optional, default to 90-day window.
+
+**Response** (HTTP 200):
+```typescript
+{
+  lgaId: string
+  lgaName: string
+  treeCount: number
+  totalAreaKm2: number
+  avgConfidence: number
+  coveragePct: number
+  tileUrl: string
+  bbox: { west: number; south: number; east: number; north: number }
+  segments: GeoJSON.FeatureCollection   // polygon features with { areaM2, confidence, ndviMean }
+  dateRangeStart: string
+  dateRangeEnd: string
+  processedAt: string
+}
+```
+
+**Error responses**: 404 (LGA not found), 422 (no imagery), 503 (EE unavailable), 200 with empty segments (zero detections).
+
+#### Updated `earthEngineService.ts`
+
+New function added:
+
+```typescript
+// Runs SNIC object-based segmentation on Sentinel-2 to detect tree/vegetation objects
+async function runTreeSegmentation(
+  bbox: BBox,
+  dateRange: DateRange,
+  lgaAreaKm2: number
+): Promise<{
+  eeUrl: string
+  segmentGeoJSON: GeoJSON.FeatureCollection
+  treeCount: number
+  totalAreaKm2: number
+  avgConfidence: number
+  coveragePct: number
+}>
+```
+
+#### Updated `SidePanel.tsx`
+
+- "Tree Segmentation" toggle button added alongside "LST Heatmap", "NDVI Vegetation", "None".
+- When active: fetches `/api/lga/:id/tree-segmentation`, shows three stat cards (`treeCount`, `totalAreaKm2`, `coveragePct`), emits `onTreeSegmentationChange`.
+
+#### Updated `MapView.tsx`
+
+When tree segmentation is active, `MapView` renders **two layers**:
+1. **HR satellite basemap tile** — proxied Sentinel-2 true-colour PNG, rendered as SVG image overlay clipped to the LGA polygon (same pattern as LST/NDVI).
+2. **Segment polygon layer** — a Leaflet `GeoJSON` layer on top with semi-transparent green fill (`#22c55e`, opacity 0.4) and solid green stroke.
+
+LGA boundary remains visible as a thin outline on top of both layers.
+
+#### Updated `App.tsx`
+
+```typescript
+type TileLayer = {
+  url: string
+  type: 'lst' | 'ndvi' | 'tree_segmentation'
+  bbox?: { west: number; south: number; east: number; north: number }
+  lgaGeometry?: GeoJSON.Geometry | null
+  dateRangeStart?: string
+  dateRangeEnd?: string
+  segments?: GeoJSON.FeatureCollection | null   // tree segment polygons
+}
+```
+
+#### Updated `chatService.ts`
+
+```typescript
+interface SegmentationContext {
+  treeCount: number
+  totalAreaKm2: number
+  coveragePct: number
+  avgConfidence: number
+}
+
+function buildSystemPrompt(heatStats: HeatStats, lgaName: string, segmentation?: SegmentationContext): string
+```
+
+### Data Models
+
+#### New Table: `tree_segments`
+
+```sql
+CREATE TABLE IF NOT EXISTS tree_segments (
+    id               SERIAL PRIMARY KEY,
+    lga_id           VARCHAR(10) NOT NULL REFERENCES lgas(lga_id),
+    geom             GEOMETRY(Polygon, 4326) NOT NULL,
+    area_m2          NUMERIC(12, 4) NOT NULL,
+    confidence       NUMERIC(5, 4) NOT NULL,
+    ndvi_mean        NUMERIC(6, 4),
+    date_range_start DATE NOT NULL,
+    date_range_end   DATE NOT NULL,
+    processed_at     TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_tree_segments_lga
+    ON tree_segments(lga_id, date_range_start, date_range_end);
+
+CREATE INDEX IF NOT EXISTS idx_tree_segments_geom
+    ON tree_segments USING GIST(geom);
+```
+
+#### Extended `gee_layers` table
+
+`layer_type = 'tree_segmentation'` stored alongside `'lst'` and `'ndvi'`. The `tile_url` holds the HR satellite basemap PNG. `avg_lst_celsius`, `avg_ndvi`, and `uhi_intensity` are `NULL` for segmentation rows.
+
+#### Updated TypeScript Types (`backend/src/types.ts`)
+
+```typescript
+interface TreeSegment {
+  id: number
+  lgaId: string
+  geom: GeoJSON.Polygon
+  areaM2: number
+  confidence: number
+  ndviMean: number | null
+  processedAt: string
+}
+
+interface TreeSegmentationResult {
+  lgaId: string
+  lgaName: string
+  treeCount: number
+  totalAreaKm2: number
+  avgConfidence: number
+  coveragePct: number
+  tileUrl: string
+  bbox: BBox
+  segments: GeoJSON.FeatureCollection
+  dateRangeStart: string
+  dateRangeEnd: string
+  processedAt: string
+}
+
+type GeeLayerType = 'lst' | 'ndvi' | 'tree_segmentation'
+```
+
+### GeoAI Segmentation Algorithm
+
+Uses GEE's **SNIC (Simple Non-Iterative Clustering)** — an object-based image analysis (OBIA) method that groups spatially and spectrally similar pixels into coherent superpixel objects. Vegetation objects are then extracted as individual tree/cluster polygons.
+
+```mermaid
+graph LR
+    S2["Sentinel-2 SR Harmonized\n(COPERNICUS/S2_SR_HARMONIZED)"]
+    Filter["Filter: bounds + date range\nCLOUDY_PIXEL_PERCENTAGE < 20"]
+    Median["Composite: .median()"]
+    NDVI["Compute NDVI band\n(B8 - B4) / (B8 + B4)"]
+    SNIC["SNIC Segmentation\nee.Algorithms.Image.Segmentation.SNIC\n(size=10, compactness=0.5, connectivity=8)"]
+    VegFilter["Filter segments:\nmean NDVI > 0.35\narea > 10 m²"]
+    Vectors["reduceToVectors → GeoJSON polygons\nwith { areaM2, confidence, ndviMean }"]
+    Basemap["True-colour basemap tile\nBands B4/B3/B2 → EE Thumbnails API"]
+    Store["INSERT INTO tree_segments\n+ INSERT INTO gee_layers"]
+
+    S2 --> Filter --> Median --> NDVI
+    Median --> SNIC
+    NDVI --> SNIC
+    SNIC --> VegFilter --> Vectors --> Store
+    Median --> Basemap --> Store
+```
+
+#### Algorithmic Pseudocode
+
+```pascal
+ALGORITHM runTreeSegmentation(bbox, dateRange, lgaAreaKm2)
+INPUT:  bbox: BBox, dateRange: DateRange, lgaAreaKm2: number
+OUTPUT: { eeUrl, segmentGeoJSON, treeCount, totalAreaKm2, avgConfidence, coveragePct }
+
+BEGIN
+  ASSERT bbox.west < bbox.east AND bbox.south < bbox.north
+  ASSERT dateRange.start < dateRange.end
+  ASSERT lgaAreaKm2 > 0
+
+  region ← ee.Geometry.Rectangle([bbox.west, bbox.south, bbox.east, bbox.north])
+
+  collection ← ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+    .filterBounds(region)
+    .filterDate(dateRange.start, dateRange.end)
+    .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 20))
+
+  IF collection.size() = 0 THEN
+    RAISE Error("No Sentinel-2 imagery available for date range")
+  END IF
+
+  composite ← collection.median().clip(region)
+  ndvi ← composite.normalizedDifference(["B8", "B4"]).rename("ndvi")
+  inputImage ← composite.select(["B2","B3","B4","B8"]).addBands(ndvi)
+
+  // SNIC object-based segmentation
+  seeds ← ee.Algorithms.Image.Segmentation.seedGrid(10)
+  snic ← ee.Algorithms.Image.Segmentation.SNIC({
+    image: inputImage, size: 10, compactness: 0.5,
+    connectivity: 8, neighborhoodSize: 256, seeds: seeds
+  })
+
+  // Filter to vegetation objects: mean NDVI > 0.35 AND area > 10 m²
+  vegMask ← snic.select("ndvi_mean").gt(0.35)
+  vegClusters ← snic.updateMask(vegMask)
+
+  vectors ← vegClusters.select("clusters").reduceToVectors({
+    reducer: ee.Reducer.mean(), geometry: region,
+    scale: 10, maxPixels: 1e9, geometryType: "polygon"
+  })
+
+  vectors ← vectors.map(f => f.set({
+    area_m2: f.geometry().area(1),
+    confidence: f.get("ndvi_mean"),
+    ndvi_mean: f.get("ndvi_mean")
+  })).filter(ee.Filter.gt("area_m2", 10))
+
+  treeCount ← vectors.size()
+  totalAreaKm2 ← vectors.aggregate_sum("area_m2") / 1e6
+  avgConfidence ← vectors.aggregate_mean("confidence")
+  coveragePct ← (totalAreaKm2 / lgaAreaKm2) * 100
+
+  ASSERT coveragePct >= 0 AND coveragePct <= 100
+  ASSERT avgConfidence >= 0 AND avgConfidence <= 1
+
+  basemap ← composite.select(["B4","B3","B2"]).visualize({ min: 0, max: 3000, gamma: 1.4 })
+  eeUrl ← callEEThumbnailsAPI(basemap, bbox)
+  segmentGeoJSON ← vectors.getInfo()
+
+  RETURN { eeUrl, segmentGeoJSON, treeCount, totalAreaKm2, avgConfidence, coveragePct }
+END
+```
+
+**Preconditions:**
+- `bbox` is a valid geographic rectangle within Australia
+- `dateRange` spans at least 30 days
+- Earth Engine is authenticated and initialised
+- `lgaAreaKm2 > 0`
+
+**Postconditions:**
+- `coveragePct ∈ [0, 100]`
+- `avgConfidence ∈ [0, 1]`
+- `segmentGeoJSON` is a valid FeatureCollection; each feature has `area_m2 > 10`, `confidence ∈ [0,1]`, `ndvi_mean > 0.35`
+- `eeUrl` is a valid EE thumbnail URL for the HR basemap
+- No mutations to input parameters
+
+### Key Functions with Formal Specifications
+
+#### `runTreeSegmentation(bbox, dateRange, lgaAreaKm2)` — earthEngineService
+
+**Preconditions:** `bbox.west < bbox.east`, `bbox.south < bbox.north`, `dateRange.start < dateRange.end`, `lgaAreaKm2 > 0`, EE authenticated.
+
+**Postconditions:** `coveragePct ∈ [0, 100]`, `avgConfidence ∈ [0, 1]`, `segmentGeoJSON` is valid FeatureCollection with `area_m2 > 10` per feature. No mutations to inputs.
+
+---
+
+#### `getTreeSegmentation(lgaId, dateRange)` — treeSegmentationService
+
+**Preconditions:** `lgaId` non-empty, `dateRange.start < dateRange.end`, DB available.
+
+**Postconditions:** Returns fully populated `TreeSegmentationResult`. Cache hit returns DB rows without EE call. Cache miss calls `runTreeSegmentation`, bulk-inserts segments, inserts `gee_layers` row. Throws 404 if LGA not found, 503 if EE unavailable.
+
+---
+
+#### `buildSystemPrompt(heatStats, lgaName, segmentation?)` — chatService
+
+**Preconditions:** `heatStats` valid, `lgaName` non-empty, `segmentation` optional with finite values.
+
+**Postconditions:** Returns non-empty string. When `segmentation` provided, includes `treeCount`, `coveragePct`, `totalAreaKm2`. Pure function — same inputs always produce same output.
+
+### Correctness Properties
+
+#### Property 34: Segment polygons are valid GeoJSON
+
+*For any* successful call to `runTreeSegmentation`, the returned `segmentGeoJSON` is a valid GeoJSON FeatureCollection where every feature has a Polygon geometry, `area_m2 > 10`, `confidence ∈ [0, 1]`, and `ndvi_mean > 0.35`.
+
+**Validates: Requirements 22.1, 22.2**
+
+---
+
+#### Property 35: coveragePct is in [0, 100]
+
+*For any* valid LGA bounding box and date range, `runTreeSegmentation` returns `coveragePct ∈ [0, 100]`.
+
+**Validates: Requirements 22.3**
+
+---
+
+#### Property 36: totalAreaKm2 derivation correctness
+
+*For any* set of segment features, `totalAreaKm2 = sum(area_m2) / 1,000,000` and `coveragePct = (totalAreaKm2 / lgaAreaKm2) × 100`.
+
+**Validates: Requirements 22.3**
+
+---
+
+#### Property 37: Tree segmentation cache hit avoids Earth Engine
+
+*For any* LGA ID and date range whose `tree_segments` rows exist in PostGIS, `getTreeSegmentation` returns the cached rows without invoking the EarthEngineService.
+
+**Validates: Requirements 22.4**
+
+---
+
+#### Property 38: Tree segmentation cache miss triggers computation and storage
+
+*For any* LGA ID and date range with no `tree_segments` rows, `getTreeSegmentation` invokes `runTreeSegmentation` and bulk-inserts the resulting segment rows before returning.
+
+**Validates: Requirements 22.4**
+
+---
+
+#### Property 39: buildSystemPrompt includes segmentation context when provided
+
+*For any* valid `HeatStats`, non-empty `lgaName`, and `SegmentationContext` with finite values, `buildSystemPrompt` returns a string that includes `treeCount`, `coveragePct`, and `totalAreaKm2` and remains deterministic.
+
+**Validates: Requirements 22.6**
+
+---
+
+### Error Handling
+
+| Scenario | Behaviour |
+|---|---|
+| No Sentinel-2 imagery for date range | Return HTTP 422 with `{ error: "No Sentinel-2 imagery available for this area and period" }` |
+| Earth Engine unavailable | Return HTTP 503 with `{ error: "Earth Engine service unavailable" }` |
+| LGA not found | Return HTTP 404 with `{ error: "LGA not found" }` |
+| SNIC produces zero segments after vegetation filter | Return HTTP 200 with `treeCount: 0`, empty `segments` FeatureCollection |
+| Database connection failure | Return HTTP 500 with generic error; log server-side |
+
+### Testing Strategy
+
+**Unit tests**:
+- `runTreeSegmentation`: mock EE, assert SNIC called with correct params, assert output shape and constraints
+- `getTreeSegmentation`: cache hit returns DB rows without EE call; cache miss calls EE and bulk-inserts rows
+- `buildSystemPrompt` with segmentation: assert segmentation fields appear in output; assert purity
+
+**Property-based tests** (fast-check):
+- Property 35: for any mocked segment list and `lgaAreaKm2 > 0`, `coveragePct ∈ [0, 100]`
+- Property 36: for any segment list, `totalAreaKm2 = sum(area_m2) / 1e6`
+- Property 39: for any valid inputs with segmentation context, prompt is non-empty, deterministic, and contains segmentation values
+
+**PBT library**: fast-check (existing project standard).
+
+### Dependencies
+
+No new infrastructure dependencies. Uses existing:
+- `COPERNICUS/S2_SR_HARMONIZED` — already authenticated and in use for NDVI
+- `ee.Algorithms.Image.Segmentation.SNIC` — built-in GEE algorithm, no external model hosting
+- `@google/earthengine` — existing EE SDK
+- `pg` — existing PostgreSQL client
+- EE Thumbnails REST API — same pattern as LST/NDVI tile generation
