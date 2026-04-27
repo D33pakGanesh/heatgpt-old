@@ -47,3 +47,4 @@ CREATE TABLE IF NOT EXISTS gee_layers (
 
 CREATE INDEX IF NOT EXISTS idx_gee_layers_lga ON gee_layers(lga_id);
 CREATE INDEX IF NOT EXISTS idx_gee_layers_lga_type ON gee_layers(lga_id, layer_type);
+CREATE INDEX IF NOT EXISTS idx_gee_layers_lookup ON gee_layers(lga_id, layer_type, date_range_start, date_range_end);

@@ -32,6 +32,8 @@ scheduled batch processing.
 - **PostGIS**: The PostgreSQL database with spatial extensions used to store LGA boundaries and heat statistics.
 - **BBox**: A bounding box defined by `{west, south, east, north}` coordinates in EPSG:4326.
 - **Stale**: A `heat_stats` record is considered stale when its `processed_at` timestamp is more than 7 days in the past.
+- **GeeLayerCache**: A cached satellite layer record in the `gee_layers` table containing tile URL, bbox, date range, and computed metrics for a specific LGA and layer type.
+- **TileURL**: The proxied URL path used by the frontend to fetch the satellite layer image without requiring Earth Engine authentication.
 
 ---
 
@@ -356,3 +358,22 @@ scheduled batch processing.
 12. THE PDFExporter SHALL use jsPDF for PDF generation and html2canvas for DOM-to-canvas capture.
 13. WHEN the map is captured, THE PDFExporter SHALL capture the element with id `"map"` including any active SVG clip-masked satellite overlay rendered within it.
 14. THE PDFExporter SHALL accept `lgaName`, `activeTileLayer`, and `scaleInfo` as inputs and produce no mutations to those inputs.
+
+---
+
+### Requirement 21: Automatic Satellite Layer Data Persistence
+
+**User Story:** As a user, I want satellite layer data to be automatically cached in the database when I view an LGA, so that subsequent views of the same LGA load instantly without redundant API calls to Google Earth Engine.
+
+#### Acceptance Criteria
+
+1. WHEN satellite layer processing completes for an LGA, THE EarthEngineService SHALL automatically save the tile URL, bbox, date range, layer type, and computed metrics to the `gee_layers` table in PostGIS.
+2. WHEN a user clicks an LGA polygon to view satellite layers, THE API SHALL first query the `gee_layers` table for cached data matching the LGA ID, layer type, and date range.
+3. WHEN cached satellite layer data exists in the `gee_layers` table for the requested LGA and date range, THE API SHALL return the cached tile URL and metrics without calling the Google Earth Engine API.
+4. WHEN no cached satellite layer data exists for the requested LGA and date range, THE API SHALL fetch data from Google Earth Engine, render the layer, and automatically save the result to the `gee_layers` table before returning.
+5. WHEN saving satellite layer data to the `gee_layers` table, THE API SHALL store `lga_id`, `layer_type` ('lst' or 'ndvi'), `date_range_start`, `date_range_end`, `tile_url`, `ee_url`, `avg_lst_celsius`, `avg_ndvi`, `uhi_intensity`, and `exported_at` timestamp.
+6. THE SidePanel SHALL NOT display a manual "Export" button for satellite layers — all persistence SHALL occur automatically.
+7. THE API SHALL maintain the existing "Load" functionality to retrieve and display cached satellite layer data from the `gee_layers` table.
+8. WHEN multiple requests for the same LGA and date range occur concurrently, THE API SHALL prevent duplicate Google Earth Engine API calls by checking the cache before each request.
+9. THE `gee_layers` table SHALL use composite indexes on `(lga_id, layer_type)` to optimize cache lookup queries.
+10. WHEN satellite layer data is cached, THE API SHALL store both the proxied tile URL (for client use) and the raw Earth Engine URL (for reference) in separate columns.

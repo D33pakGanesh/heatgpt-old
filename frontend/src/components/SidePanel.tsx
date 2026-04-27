@@ -46,7 +46,6 @@ export default function SidePanel({ lgaId, onCollapse, onTileLayerChange }: Side
   const [vizEnd, setVizEnd] = useState('')
   const [vizDateRange, setVizDateRange] = useState<{ start: string; end: string } | null>(null)
   const [tileError, setTileError] = useState<string | null>(null)
-  const [exportStatus, setExportStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
   const [showSaved, setShowSaved] = useState(false)
 
   const dateRange = computeDateRange(timespan)
@@ -340,22 +339,10 @@ export default function SidePanel({ lgaId, onCollapse, onTileLayerChange }: Side
 
             <div style={{ borderTop: '1px solid #e5e7eb', paddingTop: '16px', marginBottom: '16px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-                <span style={{ fontSize: '13px', fontWeight: 600, color: '#374151' }}>Database</span>
-                <div style={{ display: 'flex', gap: '6px' }}>
-                  <button onClick={async () => {
-                    if (!heatStats) return
-                    setExportStatus('saving')
-                    try {
-                      await fetch(`/api/lga/${lgaId}/export`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ layerType: activeLayer ?? 'lst', dateRangeStart: tileQueryRange.start, dateRangeEnd: tileQueryRange.end, tileUrl: tileData?.tileUrl ?? '', avgLstCelsius: heatStats.avgLstCelsius, avgNdvi: heatStats.avgNdvi, uhiIntensity: heatStats.uhiIntensity }) })
-                      setExportStatus('saved'); refetchSaved(); setTimeout(() => setExportStatus('idle'), 3000)
-                    } catch { setExportStatus('error'); setTimeout(() => setExportStatus('idle'), 3000) }
-                  }} style={{ padding: '5px 12px', borderRadius: '6px', border: 'none', fontSize: '12px', fontWeight: 500, cursor: 'pointer', backgroundColor: exportStatus === 'saved' ? '#16a34a' : exportStatus === 'error' ? '#dc2626' : '#1e293b', color: '#fff' }}>
-                    {exportStatus === 'saving' ? 'Saving…' : exportStatus === 'saved' ? '✓ Saved' : exportStatus === 'error' ? 'Error' : 'Export to DB'}
-                  </button>
-                  <button onClick={() => setShowSaved(s => !s)} style={{ padding: '5px 12px', borderRadius: '6px', border: '1px solid #d1d5db', fontSize: '12px', fontWeight: 500, cursor: 'pointer', backgroundColor: showSaved ? '#f3f4f6' : '#fff', color: '#374151' }}>
-                    {showSaved ? 'Hide' : `Saved (${savedLayers.length})`}
-                  </button>
-                </div>
+                <span style={{ fontSize: '13px', fontWeight: 600, color: '#374151' }}>Saved Layers</span>
+                <button onClick={() => setShowSaved(s => !s)} style={{ padding: '5px 12px', borderRadius: '6px', border: '1px solid #d1d5db', fontSize: '12px', fontWeight: 500, cursor: 'pointer', backgroundColor: showSaved ? '#f3f4f6' : '#fff', color: '#374151' }}>
+                  {showSaved ? 'Hide' : `Show (${savedLayers.length})`}
+                </button>
               </div>
               {showSaved && savedLayers.length === 0 && <p style={{ fontSize: '12px', color: '#9ca3af' }}>No saved layers yet.</p>}
               {showSaved && savedLayers.map(layer => (

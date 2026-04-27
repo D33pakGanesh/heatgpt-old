@@ -399,3 +399,53 @@ Stack: TypeScript (Node.js/Express backend, React frontend), PostgreSQL + PostGI
     - **Property 27: exportMapPdf does not mutate its inputs**
     - Deep-clone `ExportPdfOptions` before call; after call (or rejection), assert deep equality with original
     - **Validates: Requirements 20.14**
+
+- [ ] 20. Automatic Satellite Layer Persistence (Requirement 21)
+  - [ ] 20.1 Add composite index to gee_layers table
+    - Run SQL migration: `CREATE INDEX IF NOT EXISTS idx_gee_layers_lookup ON gee_layers(lga_id, layer_type, date_range_start, date_range_end);`
+    - _Requirements: 21.9_
+
+  - [ ] 20.2 Create geeLayerService.ts
+    - Implement `getGeeLayer(lgaId, layerType, dateRange)` — DB-first lookup, fetch from GEE on cache miss
+    - Implement `computeAndStoreGeeLayer(lgaId, layerType, bbox, dateRange)` — Fetch from GEE + auto-save to DB
+    - Implement `mapRowToGeeLayerRecord(row)` — Map DB row to TypeScript type
+    - Optional: `isGeeLayerStale(exportedAt, maxAgeDays)` (can reuse from heatService)
+    - _Requirements: 21.1, 21.2, 21.3, 21.4, 21.5, 21.10_
+
+  - [ ] 20.3 Update /api/lga/:id/tiles route
+    - Replace in-memory `tileUrlCache` Map with `getGeeLayer()` calls
+    - Remove 55-minute TTL logic (DB persistence is permanent)
+    - Keep error handling for 422, 503, 404
+    - _Requirements: 21.2, 21.3, 21.4_
+
+  - [ ] 20.4 Remove manual export endpoint
+    - Delete `POST /api/lga/:id/export` route
+    - Keep `GET /api/lga/:id/saved-layers` and `DELETE /api/lga/:id/saved-layers/:layerId`
+    - _Requirements: 21.6_
+
+  - [ ] 20.5 Update SidePanel.tsx
+    - Remove "Export to DB" button and related state (`exportStatus`)
+    - Keep saved layers list and "Load on map" functionality
+    - Optional: Add visual indicator for cached vs fresh layers
+    - _Requirements: 21.6, 21.7_
+
+  - [ ]* 20.6 Property tests for satellite layer caching
+    - **Property 28: Cache hit avoids Earth Engine**
+    - For any LGA with cached satellite layer data, `getGeeLayer` returns cached data without invoking Earth Engine
+    - **Validates: Requirements 21.3**
+    
+    - **Property 29: Cache miss triggers recomputation**
+    - For any LGA without cached data, `getGeeLayer` calls Earth Engine and inserts result into `gee_layers`
+    - **Validates: Requirements 21.4**
+    
+    - **Property 30: Auto-save stores all required fields**
+    - For any computed satellite layer, `computeAndStoreGeeLayer` stores `lga_id`, `layer_type`, `tile_url`, `ee_url`, date range, and metrics
+    - **Validates: Requirements 21.5, 21.10**
+    
+    - **Property 31: Proxied and raw URLs stored**
+    - For any cached layer, both `tile_url` (proxied) and `ee_url` (raw) are stored in separate columns
+    - **Validates: Requirements 21.10**
+    
+    - **Property 32: Composite index used**
+    - For any cache lookup query, the database query plan uses `idx_gee_layers_lookup` index
+    - **Validates: Requirements 21.9**

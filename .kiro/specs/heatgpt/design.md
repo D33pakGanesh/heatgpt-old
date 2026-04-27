@@ -1339,3 +1339,704 @@ type TileLayer = {
 **PBT library**: fast-check (already used in the project).
 **Minimum iterations**: 100 per property test.
 **Tag format**: `Feature: map-pdf-export, Property {N}: {property_text}`
+
+
+---
+
+## Automatic Satellite Layer Persistence (Requirement 21)
+
+### Overview
+
+The Automatic Satellite Layer Persistence feature eliminates manual export by automatically caching satellite layer data (LST and NDVI) to the `gee_layers` PostGIS table whenever a user views an LGA. Subsequent views of the same LGA with the same date range load instantly from the database without redundant Google Earth Engine API calls. This follows the same DB-first caching pattern as `heatService.ts`.
+
+### Architecture
+
+```mermaid
+sequenceDiagram
+    participant U as User (Browser)
+    participant FE as React Frontend
+    participant API as Express API
+    participant GLS as geeLayerService
+    participant DB as PostGIS
+    participant EE as Earth Engine
+
+    U->>FE: Click LGA polygon
+    FE->>API: GET /api/lga/:id/tiles?type=lst&start=...&end=...
+    API->>GLS: getGeeLayer(lgaId, 'lst', dateRange)
+    GLS->>DB: SELECT * FROM gee_layers WHERE lga_id=$1 AND layer_type=$2 AND date_range_start=$3 AND date_range_end=$4
+    alt Cache hit
+        DB-->>GLS: Cached layer record
+        GLS-->>API: { tileUrl, bbox, metrics }
+        API-->>FE: { tileUrl, bbox }
+    else Cache miss
+        GLS->>EE: getMapTileUrl('lst', bbox, dateRange)
+        EE-->>GLS: eeUrl
+        GLS->>DB: INSERT INTO gee_layers (lga_id, layer_type, tile_url, ee_url, ...)
+        GLS-->>API: { tileUrl, bbox, metrics }
+        API-->>FE: { tileUrl, bbox }
+    end
+    FE->>FE: Render satellite overlay
+```
+
+### Components and Interfaces
+
+#### `backend/src/services/geeLayerService.ts` (NEW)
+
+**Purpose**: Manage satellite layer caching with DB-first lookup pattern, mirroring `heatService.ts` structure.
+
+**Interface**:
+```typescript
+interface GeeLayerRecord {
+  id: number
+  lgaId: string
+  layerType: 'lst' | 'ndvi'
+  dateRangeStart: string
+  dateRangeEnd: string
+  tileUrl: string
+  eeUrl: string | null
+  avgLstCelsius: number | null
+  avgNdvi: number | null
+  uhiIntensity: number | null
+  exportedAt: string
+}
+
+interface GeeLayerService {
+  getGeeLayer(
+    lgaId: string,
+    layerType: 'lst' | 'ndvi',
+    dateRange: DateRange
+  ): Promise<GeeLayerRecord>
+
+  computeAndStoreGeeLayer(
+    lgaId: string,
+    layerType: 'lst' | 'ndvi',
+    bbox: BBox,
+    dateRange: DateRange
+  ): Promise<GeeLayerRecord>
+
+  isGeeLayerStale(exportedAt: Date, maxAgeDays?: number): boolean
+}
+```
+
+**Responsibilities**:
+- Check `gee_layers` table for cached satellite layer data
+- Fetch from Google Earth Engine if cache miss
+- Auto-save tile URL, bbox, date range, and metrics to database
+- Return cached data on subsequent requests
+- Optional staleness check (reuses `isStale` logic from `heatService`)
+
+#### Updated `backend/src/routes/lga.ts`
+
+**Changes to `GET /api/lga/:id/tiles`**:
+- Replace in-memory `tileUrlCache` Map with DB lookup via `geeLayerService`
+- Flow: Check DB → Return if exists → Fetch from GEE + auto-save → Return
+- Remove manual cache expiry logic (55 min TTL) — DB persistence is permanent
+
+**Removed endpoints**:
+- `POST /api/lga/:id/export` — deleted (automatic persistence replaces manual export)
+
+**Kept endpoints**:
+- `GET /api/lga/:id/saved-layers` — retrieve all cached layers for an LGA
+- `DELETE /api/lga/:id/saved-layers/:layerId` — delete a cached layer
+
+#### Frontend Changes
+
+**`frontend/src/components/SidePanel.tsx`**:
+- Remove "Export to DB" button
+- Keep saved layers list and "Load on map" functionality
+- Add visual indicator when layer is loaded from cache vs fresh from GEE (optional enhancement)
+
+### Data Models
+
+No schema changes required — `gee_layers` table already exists with all needed fields:
+
+```sql
+CREATE TABLE IF NOT EXISTS gee_layers (
+    id               SERIAL PRIMARY KEY,
+    lga_id           VARCHAR(10) NOT NULL REFERENCES lgas(lga_id),
+    layer_type       VARCHAR(10) NOT NULL,          -- 'lst' or 'ndvi'
+    date_range_start DATE NOT NULL,
+    date_range_end   DATE NOT NULL,
+    tile_url         TEXT NOT NULL,                 -- proxied tile URL
+    ee_url           TEXT,                          -- raw EE URL (may expire)
+    avg_lst_celsius  NUMERIC(6, 3),
+    avg_ndvi         NUMERIC(6, 4),
+    uhi_intensity    NUMERIC(6, 3),
+    exported_at      TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+**New composite index** (optimization):
+```sql
+CREATE INDEX IF NOT EXISTS idx_gee_layers_lookup 
+ON gee_layers(lga_id, layer_type, date_range_start, date_range_end);
+```
+
+This index optimizes the cache lookup query used by `getGeeLayer`.
+
+### Algorithmic Pseudocode
+
+#### Algorithm: Get GEE Layer (with DB-first lookup)
+
+```pascal
+ALGORITHM getGeeLayer(lgaId, layerType, dateRange)
+INPUT:  lgaId: string, layerType: 'lst' | 'ndvi', dateRange: DateRange
+OUTPUT: geeLayerRecord: GeeLayerRecord
+
+BEGIN
+  ASSERT lgaId IS NOT NULL AND lgaId IS NOT EMPTY
+  ASSERT layerType IN ['lst', 'ndvi']
+  ASSERT dateRange.start < dateRange.end
+
+  // Check cache first
+  cached ← database.query(
+    "SELECT * FROM gee_layers 
+     WHERE lga_id = $1 AND layer_type = $2 
+       AND date_range_start = $3 AND date_range_end = $4",
+    [lgaId, layerType, dateRange.start, dateRange.end]
+  )
+
+  IF cached IS NOT NULL THEN
+    RETURN mapRowToGeeLayerRecord(cached)
+  END IF
+
+  // Cache miss — fetch LGA bbox
+  lga ← database.query("SELECT * FROM lgas WHERE lga_id = $1", [lgaId])
+
+  IF lga IS NULL THEN
+    RAISE Error("LGA not found: " + lgaId)
+  END IF
+
+  // Compute and store
+  geeLayer ← computeAndStoreGeeLayer(lgaId, layerType, lga.bbox, dateRange)
+
+  RETURN geeLayer
+END
+```
+
+**Preconditions:**
+- `lgaId` is a valid non-empty string
+- `layerType` is either `'lst'` or `'ndvi'`
+- `dateRange.start` < `dateRange.end`
+- Database connection is available
+- Earth Engine credentials are initialised
+
+**Postconditions:**
+- Returns a fully populated `GeeLayerRecord` object
+- If cache miss, `gee_layers` row is created in the database
+- `exportedAt` reflects the current computation time
+- No mutations to input parameters
+
+**Loop Invariants:** N/A (no loops in this algorithm)
+
+---
+
+#### Algorithm: Compute and Store GEE Layer
+
+```pascal
+ALGORITHM computeAndStoreGeeLayer(lgaId, layerType, bbox, dateRange)
+INPUT:  lgaId: string, layerType: 'lst' | 'ndvi', bbox: BBox, dateRange: DateRange
+OUTPUT: geeLayerRecord: GeeLayerRecord
+
+BEGIN
+  ASSERT lgaId IS NOT NULL
+  ASSERT layerType IN ['lst', 'ndvi']
+  ASSERT bbox.west < bbox.east
+  ASSERT bbox.south < bbox.north
+  ASSERT dateRange.start < dateRange.end
+
+  // Fetch tile URL from Earth Engine
+  eeUrl ← getMapTileUrl(layerType, bbox, dateRange)
+
+  // Build proxied tile URL
+  tileUrl ← FORMAT(
+    "/api/lga/{lgaId}/tile-image?type={layerType}&start={start}&end={end}",
+    lgaId, layerType, dateRange.start, dateRange.end
+  )
+
+  // Compute metrics (optional — may be null if not needed)
+  avgLstCelsius ← NULL
+  avgNdvi ← NULL
+  uhiIntensity ← NULL
+
+  IF layerType = 'lst' THEN
+    avgLstCelsius ← computeLST(bbox, dateRange)
+    regionalMeanLST ← computeRegionalMeanLST(dateRange)
+    uhiIntensity ← computeUHI(avgLstCelsius, regionalMeanLST)
+  ELSE IF layerType = 'ndvi' THEN
+    avgNdvi ← computeNDVI(bbox, dateRange)
+  END IF
+
+  // Insert into database
+  INSERT INTO gee_layers
+    (lga_id, layer_type, date_range_start, date_range_end, 
+     tile_url, ee_url, avg_lst_celsius, avg_ndvi, uhi_intensity)
+  VALUES
+    (lgaId, layerType, dateRange.start, dateRange.end,
+     tileUrl, eeUrl, avgLstCelsius, avgNdvi, uhiIntensity)
+
+  // Return record
+  RETURN {
+    lgaId: lgaId,
+    layerType: layerType,
+    dateRangeStart: dateRange.start,
+    dateRangeEnd: dateRange.end,
+    tileUrl: tileUrl,
+    eeUrl: eeUrl,
+    avgLstCelsius: avgLstCelsius,
+    avgNdvi: avgNdvi,
+    uhiIntensity: uhiIntensity,
+    exportedAt: NOW()
+  }
+END
+```
+
+**Preconditions:**
+- `lgaId` is a valid non-empty string
+- `layerType` is either `'lst'` or `'ndvi'`
+- `bbox` defines a valid geographic rectangle
+- `dateRange` spans at least 30 days to ensure imagery availability
+- Earth Engine is authenticated and initialised
+
+**Postconditions:**
+- Returns a fully populated `GeeLayerRecord` object
+- `gee_layers` row is created in the database
+- `tileUrl` is a valid proxied URL path
+- `eeUrl` is the raw Earth Engine URL (may expire after 55 minutes)
+- Metrics are computed and stored (or null if not applicable)
+- No mutations to input parameters
+
+**Loop Invariants:** N/A (no loops in this algorithm)
+
+---
+
+### Key Functions with Formal Specifications
+
+#### `getGeeLayer(lgaId, layerType, dateRange)` — geeLayerService
+
+```typescript
+async function getGeeLayer(
+  lgaId: string,
+  layerType: 'lst' | 'ndvi',
+  dateRange: DateRange
+): Promise<GeeLayerRecord>
+```
+
+**Preconditions:**
+- `lgaId` is a non-empty string
+- `layerType` is either `'lst'` or `'ndvi'`
+- `dateRange.start` < `dateRange.end`
+- Database connection is available
+
+**Postconditions:**
+- Returns a `GeeLayerRecord` object
+- If cached data exists, returns it without calling Earth Engine
+- If cache miss, fetches from Earth Engine and auto-saves to database
+- Throws error if LGA not found (HTTP 404)
+- Throws error if Earth Engine unavailable (HTTP 503)
+
+---
+
+#### `computeAndStoreGeeLayer(lgaId, layerType, bbox, dateRange)` — geeLayerService
+
+```typescript
+async function computeAndStoreGeeLayer(
+  lgaId: string,
+  layerType: 'lst' | 'ndvi',
+  bbox: BBox,
+  dateRange: DateRange
+): Promise<GeeLayerRecord>
+```
+
+**Preconditions:**
+- `lgaId` is a non-empty string
+- `layerType` is either `'lst'` or `'ndvi'`
+- `bbox` defines a valid geographic rectangle
+- `dateRange.start` < `dateRange.end`
+- Earth Engine is authenticated
+
+**Postconditions:**
+- Returns a `GeeLayerRecord` object
+- `gee_layers` row is created in the database
+- `tileUrl` and `eeUrl` are both stored
+- Metrics are computed and stored (or null)
+- No mutations to input parameters
+
+---
+
+#### `isGeeLayerStale(exportedAt, maxAgeDays)` — geeLayerService
+
+```typescript
+function isGeeLayerStale(exportedAt: Date, maxAgeDays: number = 7): boolean
+```
+
+**Preconditions:**
+- `exportedAt` is a valid Date object
+- `maxAgeDays` is a positive integer
+
+**Postconditions:**
+- Returns `true` if `(now - exportedAt) > maxAgeDays * 86400000`
+- Returns `false` otherwise
+- No side effects
+
+**Note**: This function is optional and can reuse the existing `isStale` function from `heatService.ts`. It's included here for completeness but may not be needed if satellite layers are never considered stale (permanent cache).
+
+---
+
+### Example Usage
+
+#### Backend: Using geeLayerService in `/api/lga/:id/tiles`
+
+```typescript
+// routes/lga.ts
+import { getGeeLayer } from '../services/geeLayerService'
+
+router.get('/lga/:id/tiles', async (req: Request, res: Response) => {
+  const { type, start, end } = req.query as { type?: string; start?: string; end?: string }
+
+  if (!type || (type !== 'lst' && type !== 'ndvi')) {
+    return res.status(400).json({ error: 'type must be "lst" or "ndvi"' })
+  }
+
+  try {
+    const dateRange: DateRange = {
+      start: start ?? new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
+      end: end ?? new Date().toISOString().slice(0, 10),
+    }
+
+    // DB-first lookup via geeLayerService
+    const geeLayer = await getGeeLayer(req.params.id, type as 'lst' | 'ndvi', dateRange)
+
+    res.status(200).json({
+      tileUrl: geeLayer.tileUrl,
+      bbox: geeLayer.bbox,
+    })
+  } catch (err: any) {
+    console.error('GET /lga/:id/tiles error:', err.message)
+    if (err.message?.includes('No Landsat imagery') || err.message?.includes('No imagery')) {
+      return res.status(422).json({ error: err.message })
+    }
+    res.status(503).json({ error: 'Earth Engine service unavailable' })
+  }
+})
+```
+
+#### Backend: geeLayerService implementation
+
+```typescript
+// services/geeLayerService.ts
+import { pool } from '../db/pool'
+import { GeeLayerRecord, BBox, DateRange } from '../types'
+import { getLgaById } from './lgaService'
+import { getMapTileUrl, computeLST, computeNDVI, computeUHI, computeRegionalMeanLST } from './earthEngineService'
+
+export async function getGeeLayer(
+  lgaId: string,
+  layerType: 'lst' | 'ndvi',
+  dateRange: DateRange
+): Promise<GeeLayerRecord> {
+  // Check cache first
+  const cacheResult = await pool.query(
+    `SELECT * FROM gee_layers
+     WHERE lga_id = $1 AND layer_type = $2
+       AND date_range_start = $3 AND date_range_end = $4`,
+    [lgaId, layerType, dateRange.start, dateRange.end]
+  )
+
+  const cached = cacheResult.rows[0] ?? null
+
+  if (cached) {
+    return mapRowToGeeLayerRecord(cached)
+  }
+
+  // Cache miss — verify LGA exists
+  const lga = await getLgaById(lgaId)
+  if (!lga) {
+    const err = new Error(`LGA not found: ${lgaId}`) as any
+    err.status = 404
+    throw err
+  }
+
+  // Compute and store
+  const geeLayer = await computeAndStoreGeeLayer(lgaId, layerType, lga.bbox, dateRange)
+  return geeLayer
+}
+
+export async function computeAndStoreGeeLayer(
+  lgaId: string,
+  layerType: 'lst' | 'ndvi',
+  bbox: BBox,
+  dateRange: DateRange
+): Promise<GeeLayerRecord> {
+  // Fetch tile URL from Earth Engine
+  const eeUrl = await getMapTileUrl(layerType, bbox, dateRange)
+
+  // Build proxied tile URL
+  const tileUrl = `/api/lga/${lgaId}/tile-image?type=${layerType}&start=${dateRange.start}&end=${dateRange.end}`
+
+  // Compute metrics (optional)
+  let avgLstCelsius: number | null = null
+  let avgNdvi: number | null = null
+  let uhiIntensity: number | null = null
+
+  if (layerType === 'lst') {
+    avgLstCelsius = await computeLST(bbox, dateRange)
+    const regionalMeanLST = await computeRegionalMeanLST(dateRange)
+    uhiIntensity = computeUHI(avgLstCelsius, regionalMeanLST)
+  } else if (layerType === 'ndvi') {
+    avgNdvi = await computeNDVI(bbox, dateRange)
+  }
+
+  // Insert into database
+  await pool.query(
+    `INSERT INTO gee_layers
+       (lga_id, layer_type, date_range_start, date_range_end, tile_url, ee_url,
+        avg_lst_celsius, avg_ndvi, uhi_intensity)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+    [lgaId, layerType, dateRange.start, dateRange.end, tileUrl, eeUrl,
+     avgLstCelsius, avgNdvi, uhiIntensity]
+  )
+
+  return {
+    id: 0, // Will be assigned by database
+    lgaId,
+    layerType,
+    dateRangeStart: dateRange.start,
+    dateRangeEnd: dateRange.end,
+    tileUrl,
+    eeUrl,
+    avgLstCelsius,
+    avgNdvi,
+    uhiIntensity,
+    exportedAt: new Date().toISOString(),
+  }
+}
+
+function mapRowToGeeLayerRecord(row: Record<string, unknown>): GeeLayerRecord {
+  return {
+    id: row.id as number,
+    lgaId: row.lga_id as string,
+    layerType: row.layer_type as 'lst' | 'ndvi',
+    dateRangeStart: (row.date_range_start as Date).toISOString().slice(0, 10),
+    dateRangeEnd: (row.date_range_end as Date).toISOString().slice(0, 10),
+    tileUrl: row.tile_url as string,
+    eeUrl: row.ee_url as string | null,
+    avgLstCelsius: row.avg_lst_celsius ? parseFloat(row.avg_lst_celsius as string) : null,
+    avgNdvi: row.avg_ndvi ? parseFloat(row.avg_ndvi as string) : null,
+    uhiIntensity: row.uhi_intensity ? parseFloat(row.uhi_intensity as string) : null,
+    exportedAt: (row.exported_at as Date).toISOString(),
+  }
+}
+```
+
+#### Frontend: Remove "Export to DB" button
+
+```typescript
+// components/SidePanel.tsx
+// BEFORE:
+<button onClick={handleExport}>Export to DB</button>
+
+// AFTER:
+// (button removed — automatic persistence replaces manual export)
+```
+
+---
+
+### Correctness Properties
+
+*A property is a characteristic or behavior that should hold true across all valid executions of a system — essentially, a formal statement about what the system should do. Properties serve as the bridge between human-readable specifications and machine-verifiable correctness guarantees.*
+
+#### Property 28: Cache hit avoids Earth Engine
+
+*For any* LGA ID, layer type, and date range whose `gee_layers` record exists in PostGIS, `getGeeLayer` returns the cached record without invoking the EarthEngineService.
+
+**Validates: Requirements 21.3**
+
+---
+
+#### Property 29: Cache miss triggers recomputation and auto-save
+
+*For any* LGA ID, layer type, and date range whose `gee_layers` record is absent, `getGeeLayer` invokes the EarthEngineService and inserts the resulting tile URL and metrics into `gee_layers` before returning.
+
+**Validates: Requirements 21.4**
+
+---
+
+#### Property 30: Auto-save stores all required fields
+
+*For any* successful call to `computeAndStoreGeeLayer`, the inserted `gee_layers` row contains non-null values for `lga_id`, `layer_type`, `date_range_start`, `date_range_end`, `tile_url`, and `exported_at`.
+
+**Validates: Requirements 21.5**
+
+---
+
+#### Property 31: Proxied and raw URLs are both stored
+
+*For any* `gee_layers` record created by `computeAndStoreGeeLayer`, both `tile_url` (proxied URL) and `ee_url` (raw Earth Engine URL) are stored in separate columns.
+
+**Validates: Requirements 21.10**
+
+---
+
+#### Property 32: Composite index optimizes cache lookup
+
+*For any* cache lookup query using `lga_id`, `layer_type`, `date_range_start`, and `date_range_end`, the database query planner uses the `idx_gee_layers_lookup` composite index.
+
+**Validates: Requirements 21.9**
+
+---
+
+#### Property 33: Concurrent requests prevent duplicate EE calls
+
+*For any* two concurrent requests for the same LGA ID, layer type, and date range, at most one request invokes the EarthEngineService — the second request waits for the first to complete and returns the cached result.
+
+**Validates: Requirements 21.8**
+
+**Note**: This property requires transaction-level locking or a distributed lock (e.g., Redis) to prevent race conditions. The current implementation does not enforce this — it's a future enhancement.
+
+---
+
+### Error Handling
+
+| Scenario | Behaviour |
+|---|---|
+| Earth Engine unavailable during cache miss | Return HTTP 503 with `{ error: "Earth Engine service unavailable" }` |
+| LGA not found | Return HTTP 404 with `{ error: "LGA not found" }` |
+| No satellite imagery available | Return HTTP 422 with `{ error: "Insufficient satellite imagery for this area and period" }` |
+| Database connection failure | Return HTTP 500 with generic error message; log full error server-side |
+| Concurrent requests (race condition) | Both requests may call Earth Engine; second request overwrites first (acceptable for now) |
+
+---
+
+### Testing Strategy
+
+#### Unit Testing Approach
+
+Test each function in isolation using mocked dependencies (database, Earth Engine).
+
+Key unit test cases:
+- `getGeeLayer`: returns cached record when cache hit; calls `computeAndStoreGeeLayer` on cache miss
+- `computeAndStoreGeeLayer`: inserts row into `gee_layers` table; returns correct `GeeLayerRecord`
+- `mapRowToGeeLayerRecord`: correctly maps database row fields to TypeScript type
+- Route handler: returns 404 for unknown LGA ID; returns 200 with valid body for known ID
+
+#### Property-Based Testing Approach
+
+**Property Test Library**: fast-check
+
+```typescript
+// Property 28: Cache hit avoids Earth Engine
+fc.assert(fc.property(
+  fc.string({ minLength: 1 }),
+  fc.constantFrom('lst', 'ndvi'),
+  validDateRangeArbitrary(),
+  async (lgaId, layerType, dateRange) => {
+    // Mock database to return cached record
+    const mockDb = { query: jest.fn().mockResolvedValue({ rows: [mockCachedRecord] }) }
+    const mockEE = { getMapTileUrl: jest.fn() }
+
+    await getGeeLayer(lgaId, layerType, dateRange)
+
+    // Assert Earth Engine was NOT called
+    expect(mockEE.getMapTileUrl).not.toHaveBeenCalled()
+  }
+))
+
+// Property 29: Cache miss triggers recomputation
+fc.assert(fc.property(
+  fc.string({ minLength: 1 }),
+  fc.constantFrom('lst', 'ndvi'),
+  validDateRangeArbitrary(),
+  async (lgaId, layerType, dateRange) => {
+    // Mock database to return no cached record
+    const mockDb = { query: jest.fn().mockResolvedValue({ rows: [] }) }
+    const mockEE = { getMapTileUrl: jest.fn().mockResolvedValue('https://ee.url') }
+
+    await getGeeLayer(lgaId, layerType, dateRange)
+
+    // Assert Earth Engine WAS called
+    expect(mockEE.getMapTileUrl).toHaveBeenCalledWith(layerType, expect.any(Object), dateRange)
+    // Assert database INSERT was called
+    expect(mockDb.query).toHaveBeenCalledWith(expect.stringContaining('INSERT INTO gee_layers'), expect.any(Array))
+  }
+))
+
+// Property 30: Auto-save stores all required fields
+fc.assert(fc.property(
+  fc.string({ minLength: 1 }),
+  fc.constantFrom('lst', 'ndvi'),
+  validBBoxArbitrary(),
+  validDateRangeArbitrary(),
+  async (lgaId, layerType, bbox, dateRange) => {
+    const result = await computeAndStoreGeeLayer(lgaId, layerType, bbox, dateRange)
+
+    // Assert all required fields are non-null
+    expect(result.lgaId).toBe(lgaId)
+    expect(result.layerType).toBe(layerType)
+    expect(result.dateRangeStart).toBe(dateRange.start)
+    expect(result.dateRangeEnd).toBe(dateRange.end)
+    expect(result.tileUrl).toBeTruthy()
+    expect(result.exportedAt).toBeTruthy()
+  }
+))
+```
+
+#### Integration Testing Approach
+
+- Spin up a test PostgreSQL instance with PostGIS and seed with sample LGA data
+- Test full request/response cycle for `/api/lga/:id/tiles` against the test DB
+- Mock Earth Engine API calls at the HTTP boundary using `nock`
+- Verify cache hit returns cached data without calling Earth Engine
+- Verify cache miss calls Earth Engine and inserts row into `gee_layers`
+
+---
+
+### Performance Considerations
+
+- Cache lookup query uses composite index `idx_gee_layers_lookup` for fast retrieval (< 10ms)
+- Earth Engine computations are slow (5–30 seconds) but only occur once per LGA + date range combination
+- Subsequent requests for the same LGA + date range are served from PostGIS in < 100ms
+- In-memory `tileUrlCache` Map is removed — all caching is now DB-backed for persistence across server restarts
+- Concurrent requests for the same LGA may result in duplicate Earth Engine calls (acceptable for now; future enhancement: distributed lock)
+
+---
+
+### Security Considerations
+
+- No new security concerns — existing Earth Engine authentication and database parameterised queries apply
+- `gee_layers` table is only accessible via authenticated API endpoints
+- Raw Earth Engine URLs (`ee_url`) may expire after 55 minutes but are stored for reference
+- Proxied tile URLs (`tile_url`) remain valid indefinitely as they route through the backend proxy
+
+---
+
+### Dependencies
+
+No new dependencies required — uses existing:
+- `pg` — PostgreSQL client
+- `@google/earthengine` — Earth Engine JavaScript API
+- Existing `earthEngineService.ts` functions (`getMapTileUrl`, `computeLST`, `computeNDVI`, etc.)
+- Existing `lgaService.ts` functions (`getLgaById`)
+
+---
+
+### Migration Notes
+
+**Database migration** (add composite index):
+```sql
+CREATE INDEX IF NOT EXISTS idx_gee_layers_lookup 
+ON gee_layers(lga_id, layer_type, date_range_start, date_range_end);
+```
+
+**Code changes**:
+1. Create `backend/src/services/geeLayerService.ts` with `getGeeLayer`, `computeAndStoreGeeLayer`, and `mapRowToGeeLayerRecord` functions
+2. Update `backend/src/routes/lga.ts`:
+   - Replace in-memory `tileUrlCache` Map with `getGeeLayer` calls
+   - Remove `POST /api/lga/:id/export` endpoint
+3. Update `frontend/src/components/SidePanel.tsx`:
+   - Remove "Export to DB" button
+   - Keep saved layers list and "Load on map" functionality
+
+**Backward compatibility**:
+- Existing `gee_layers` rows created via manual export remain valid and are used by the new cache lookup
+- No data migration required

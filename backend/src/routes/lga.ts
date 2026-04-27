@@ -3,7 +3,8 @@ import axios from 'axios'
 import { pool } from '../db/pool'
 import { getAllLgas, getLgaById } from '../services/lgaService'
 import { getHeatStats, getHeatStatsForRange } from '../services/heatService'
-import { getMapTileUrl, getAccessToken, computeLSTTrend, computeNDVITrend } from '../services/earthEngineService'
+import { getAccessToken, computeLSTTrend, computeNDVITrend } from '../services/earthEngineService'
+import { getGeeLayer } from '../services/geeLayerService'
 import { DateRange } from '../types'
 
 const router = Router()
@@ -29,33 +30,29 @@ router.get('/lga/:id/tiles', async (req: Request, res: Response) => {
   }
 
   try {
-    const lga = await getLgaById(req.params.id)
-    if (!lga) {
-      return res.status(404).json({ error: 'LGA not found' })
-    }
-
     const dateRange: DateRange = {
       start: start ?? new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
       end: end ?? new Date().toISOString().slice(0, 10),
     }
 
-    const cacheKey = `${req.params.id}-${type}-${dateRange.start}-${dateRange.end}`
-    const cached = tileUrlCache.get(cacheKey)
-    let eeUrl: string
+    // Use DB-first caching pattern via geeLayerService
+    const geeLayer = await getGeeLayer(req.params.id, type as 'lst' | 'ndvi', dateRange)
 
-    if (cached && cached.expires > Date.now()) {
-      eeUrl = cached.url
-    } else {
-      eeUrl = await getMapTileUrl(type as 'lst' | 'ndvi', lga.bbox, dateRange)
-      tileUrlCache.set(cacheKey, { url: eeUrl, expires: Date.now() + 55 * 60 * 1000 })
+    // Cache the EE URL for tile-image proxy endpoint
+    const cacheKey = `${req.params.id}-${type}-${dateRange.start}-${dateRange.end}`
+    if (geeLayer.eeUrl) {
+      tileUrlCache.set(cacheKey, { url: geeLayer.eeUrl, expires: Date.now() + 55 * 60 * 1000 })
     }
 
     res.status(200).json({
-      tileUrl: `/api/lga/${req.params.id}/tile-image?type=${type}&start=${dateRange.start}&end=${dateRange.end}`,
-      bbox: lga.bbox,
+      tileUrl: geeLayer.tileUrl,
+      bbox: geeLayer.bbox,
     })
   } catch (err: any) {
     console.error('GET /lga/:id/tiles error:', err.message)
+    if (err.status === 404) {
+      return res.status(404).json({ error: err.message })
+    }
     if (err.message?.includes('No Landsat imagery') || err.message?.includes('No imagery')) {
       return res.status(422).json({ error: err.message })
     }
@@ -153,28 +150,13 @@ router.get('/lga/:id/heat', async (req: Request, res: Response) => {
 })
 
 // Export current heat stats + active tile layer to PostGIS
+// DEPRECATED: This endpoint is no longer needed as layers are auto-saved
+// Kept for backward compatibility but will be removed in future versions
 router.post('/lga/:id/export', async (req: Request, res: Response) => {
-  const { layerType, dateRangeStart, dateRangeEnd, tileUrl, eeUrl,
-          avgLstCelsius, avgNdvi, uhiIntensity } = req.body
-
-  if (!layerType || !dateRangeStart || !dateRangeEnd || !tileUrl) {
-    return res.status(400).json({ error: 'Missing required fields' })
-  }
-
-  try {
-    await pool.query(
-      `INSERT INTO gee_layers
-         (lga_id, layer_type, date_range_start, date_range_end, tile_url, ee_url,
-          avg_lst_celsius, avg_ndvi, uhi_intensity)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-      [req.params.id, layerType, dateRangeStart, dateRangeEnd, tileUrl, eeUrl ?? null,
-       avgLstCelsius ?? null, avgNdvi ?? null, uhiIntensity ?? null]
-    )
-    res.status(200).json({ message: 'Exported successfully' })
-  } catch (err: any) {
-    console.error('POST /lga/:id/export error:', err.message)
-    res.status(500).json({ error: 'Failed to export to database' })
-  }
+  res.status(410).json({ 
+    error: 'This endpoint is deprecated. Layers are now automatically saved to the database.',
+    message: 'No action needed - your data is already persisted.'
+  })
 })
 
 // Get saved GEE layers for an LGA from PostGIS
