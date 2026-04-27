@@ -2008,13 +2008,20 @@ ON gee_layers(lga_id, layer_type, date_range_start, date_range_end);
 
 ---
 
+
 ## Tree Segmentation (Feature Addition)
 
 ### Overview
 
-The Tree Segmentation feature adds GeoAI-based individual tree detection to the existing HeatGPT workflow. After a user selects an LGA, the system uses high-resolution satellite imagery (Google Earth Engine's NAIP or Sentinel-2 at 10 m) combined with GEE's built-in object-based segmentation (`ee.Algorithms.Image.Segmentation.SNIC`) to detect individual trees or tree clusters within the LGA boundary. Results are stored as **vector polygon geometries** in PostGIS â€” not raster masks â€” enabling spatial queries, area calculations, and density analysis. The feature is additive and does not modify the existing LST/NDVI/UHI pipeline.
+The Tree Segmentation feature adds genuine GeoAI-based individual tree detection to HeatGPT. After a user selects an LGA, the system uses the **`geoai-py`** Python package (by Qiusheng Wu) with its **CLIPSeg** text-prompt segmentation model to detect individual trees and tree clusters from high-resolution satellite imagery. The Node.js backend spawns a Python sidecar script via `child_process`, which downloads the satellite tile, runs `geoai.CLIPSegmentation` with the prompt `"trees"`, and returns GeoJSON polygon features. Results are stored as vector geometries in PostGIS and served via a new endpoint.
 
-**Key distinction from spectral thresholding:** This approach uses image segmentation to group spatially coherent high-vegetation pixels into discrete polygon objects, producing individual tree or tree-cluster footprints rather than a binary pixel mask.
+**Why geoai-py + CLIPSeg:**
+- CLIPSeg is a CVPR 2022 deep learning model that segments images using natural language text prompts — no training data required
+- `geoai-py` wraps CLIPSeg with geospatial utilities (tile handling, GeoJSON export, coordinate reprojection)
+- No new server needed — Python is already available on the Ubuntu VM; `pip install geoai-py` is the only addition
+- Output is vector polygons (individual tree crowns), not a raster mask
+
+**Key distinction from spectral thresholding:** CLIPSeg uses a vision-language model to understand what "trees" look like semantically, producing discrete polygon objects rather than pixel classifications.
 
 ### Architecture
 
@@ -2024,17 +2031,19 @@ graph TD
     SP["SidePanel.tsx\n(Tree Segmentation toggle + stat cards)"]
     MV["MapView.tsx\n(HR satellite basemap + segment polygons)"]
     API["Express API\nGET /api/lga/:id/tree-segmentation"]
-    TSS["treeSegmentationService.ts\n(DB-first cache)"]
-    EES["earthEngineService.ts\n(runTreeSegmentation)"]
+    TSS["treeSegmentationService.ts\n(DB-first cache + Python sidecar)"]
+    PY["Python Sidecar Script\nscripts/tree_segment.py\n(geoai-py + CLIPSeg)"]
     DB["PostgreSQL + PostGIS\ntree_segments table"]
-    EE["Google Earth Engine\nSNIC segmentation + S2 imagery"]
+    EE["Google Earth Engine\nHR satellite tile download"]
     Chat["chatService.ts\n(system prompt enrichment)"]
 
     User --> SP
     SP -->|"GET /api/lga/:id/tree-segmentation"| API
     API --> TSS
-    TSS -->|"cache miss"| EES
-    EES --> EE
+    TSS -->|"cache miss: child_process.spawn"| PY
+    PY -->|"downloads tile from EE"| EE
+    PY -->|"CLIPSeg segmentation"| PY
+    PY -->|"stdout: GeoJSON"| TSS
     TSS --> DB
     API --> Chat
     SP --> MV
@@ -2051,10 +2060,10 @@ sequenceDiagram
     participant API as Express API
     participant TSS as treeSegmentationService
     participant DB as PostGIS
+    participant PY as Python Sidecar (geoai-py)
     participant EE as Earth Engine
 
     U->>SP: Click "Tree Segmentation" toggle
-
     SP->>API: GET /api/lga/:id/tree-segmentation?start=...&end=...
     API->>TSS: getTreeSegmentation(lgaId, dateRange)
     TSS->>DB: SELECT * FROM tree_segments WHERE lga_id=$1 AND date_range_start=$2 AND date_range_end=$3
@@ -2063,47 +2072,106 @@ sequenceDiagram
         TSS-->>API: TreeSegmentationResult
         API-->>SP: { segments: GeoJSON, stats, tileUrl, bbox }
     else Cache miss
-        TSS->>EE: runTreeSegmentation(bbox, dateRange)
-        EE-->>TSS: { segmentGeoJSON, tileUrl, stats }
-        TSS->>DB: INSERT INTO tree_segments (bulk) + INSERT INTO gee_layers (layer_type='tree_segmentation')
+        TSS->>PY: child_process.spawn('python3', ['scripts/tree_segment.py', bbox, dateRange, eeToken])
+        PY->>EE: Download HR satellite tile (Sentinel-2 true colour PNG)
+        EE-->>PY: satellite_tile.tif
+        PY->>PY: geoai.CLIPSegmentation(tile_size=512, overlap=32)
+        PY->>PY: segmenter.segment_image(raster_path, text_prompt="trees")
+        PY->>PY: Export GeoJSON polygons with { area_m2, confidence, ndvi_mean }
+        PY-->>TSS: stdout JSON { segments: GeoJSON, stats }
+        TSS->>DB: INSERT INTO tree_segments (bulk) + INSERT INTO gee_layers
         TSS-->>API: TreeSegmentationResult
         API-->>SP: { segments: GeoJSON, stats, tileUrl, bbox }
     end
     SP->>SP: Show stat cards (treeCount, totalAreaKm2, avgConfidence)
     SP->>MV: emit onTreeSegmentationChange({ segments, tileUrl, bbox })
-    MV->>MV: Load HR satellite basemap tile
-    MV->>MV: Render segment polygons as GeoJSON layer on top
+    MV->>MV: Load HR satellite basemap tile (SVG clip-masked)
+    MV->>MV: Render segment polygons as Leaflet GeoJSON layer on top
     MV-->>U: Map shows HR imagery + tree polygons + LGA boundary
 ```
 
 ### Components and Interfaces
 
+#### New Python Sidecar Script: `backend/scripts/tree_segment.py`
+
+**Purpose**: Runs CLIPSeg tree segmentation via `geoai-py` and outputs GeoJSON to stdout. Called by Node.js via `child_process.spawn`.
+
+**Invocation** (from Node.js):
+```typescript
+child_process.spawn('python3', [
+  'scripts/tree_segment.py',
+  '--tile', '/tmp/tile_<lgaId>.tif',
+  '--bbox', JSON.stringify(bbox),
+  '--output', '/tmp/segments_<lgaId>.geojson'
+])
+```
+
+**Script logic**:
+```python
+# backend/scripts/tree_segment.py
+import sys, json, argparse
+import geoai
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--tile', required=True)   # path to downloaded .tif
+    parser.add_argument('--bbox', required=True)   # JSON bbox string
+    parser.add_argument('--output', required=True) # output GeoJSON path
+    args = parser.parse_args()
+
+    # Run CLIPSeg segmentation with text prompt "trees"
+    segmenter = geoai.CLIPSegmentation(tile_size=512, overlap=32)
+    mask_path = args.tile.replace('.tif', '_mask.tif')
+    segmenter.segment_image(
+        source=args.tile,
+        output=mask_path,
+        text_prompts=["trees"],
+        threshold=0.4
+    )
+
+    # Convert raster mask to vector polygons
+    gdf = geoai.raster_to_vector(mask_path, min_area=10)  # min 10 m²
+    gdf['area_m2'] = gdf.geometry.area
+    gdf['confidence'] = gdf.get('score', 0.5)
+
+    # Output GeoJSON to stdout
+    result = {
+        'segments': json.loads(gdf.to_crs('EPSG:4326').to_json()),
+        'treeCount': len(gdf),
+        'totalAreaKm2': float(gdf['area_m2'].sum() / 1e6),
+        'avgConfidence': float(gdf['confidence'].mean()) if len(gdf) > 0 else 0.0
+    }
+    print(json.dumps(result))
+
+if __name__ == '__main__':
+    main()
+```
+
 #### New Backend Service: `backend/src/services/treeSegmentationService.ts`
 
-**Purpose**: DB-first caching for tree segmentation results, mirroring `geeLayerService.ts` and `heatService.ts` patterns.
+**Purpose**: DB-first caching for tree segmentation results. On cache miss, downloads the satellite tile from EE, spawns the Python sidecar, parses the GeoJSON output, and bulk-inserts into PostGIS.
 
 **Interface**:
 ```typescript
 interface TreeSegment {
   id: number
   lgaId: string
-  geom: GeoJSON.Polygon | GeoJSON.MultiPolygon  // individual tree/cluster footprint
-  areaM2: number          // segment area in square metres
-  confidence: number      // segmentation confidence score [0, 1]
-  ndviMean: number        // mean NDVI within segment (informational, not threshold)
+  geom: GeoJSON.Polygon
+  areaM2: number
+  confidence: number
   processedAt: string
 }
 
 interface TreeSegmentationResult {
   lgaId: string
   lgaName: string
-  treeCount: number           // number of detected tree segments
-  totalAreaKm2: number        // total area of all segments in km²
-  avgConfidence: number       // mean confidence across all segments
-  coveragePct: number         // % of LGA area covered by segments
+  treeCount: number
+  totalAreaKm2: number
+  avgConfidence: number
+  coveragePct: number
   tileUrl: string             // proxied HR satellite basemap tile URL
   bbox: BBox
-  segments: GeoJSON.FeatureCollection  // all segment polygons as GeoJSON
+  segments: GeoJSON.FeatureCollection
   dateRangeStart: string
   dateRangeEnd: string
   processedAt: string
@@ -2112,6 +2180,36 @@ interface TreeSegmentationResult {
 interface TreeSegmentationService {
   getTreeSegmentation(lgaId: string, dateRange: DateRange): Promise<TreeSegmentationResult>
   computeAndStoreSegmentation(lgaId: string, bbox: BBox, areaKm2: number, dateRange: DateRange): Promise<TreeSegmentationResult>
+  runPythonSidecar(tilePath: string, bbox: BBox): Promise<{ segments: GeoJSON.FeatureCollection; treeCount: number; totalAreaKm2: number; avgConfidence: number }>
+}
+```
+
+**Python sidecar invocation** (within `treeSegmentationService.ts`):
+```typescript
+import { spawn } from 'child_process'
+import path from 'path'
+
+async function runPythonSidecar(tilePath: string, bbox: BBox): Promise<SidecarResult> {
+  return new Promise((resolve, reject) => {
+    const scriptPath = path.join(__dirname, '../../scripts/tree_segment.py')
+    const proc = spawn('python3', [
+      scriptPath,
+      '--tile', tilePath,
+      '--bbox', JSON.stringify(bbox),
+      '--output', tilePath.replace('.tif', '_segments.geojson')
+    ])
+
+    let stdout = ''
+    let stderr = ''
+    proc.stdout.on('data', (d) => { stdout += d })
+    proc.stderr.on('data', (d) => { stderr += d })
+
+    proc.on('close', (code) => {
+      if (code !== 0) return reject(new Error(`Python sidecar failed: ${stderr}`))
+      try { resolve(JSON.parse(stdout)) }
+      catch (e) { reject(new Error(`Failed to parse sidecar output: ${stdout}`)) }
+    })
+  })
 }
 ```
 
@@ -2132,45 +2230,42 @@ Added to `backend/src/routes/lga.ts`.
   coveragePct: number
   tileUrl: string
   bbox: { west: number; south: number; east: number; north: number }
-  segments: GeoJSON.FeatureCollection   // polygon features with { areaM2, confidence, ndviMean }
+  segments: GeoJSON.FeatureCollection
   dateRangeStart: string
   dateRangeEnd: string
   processedAt: string
 }
 ```
 
-**Error responses**: 404 (LGA not found), 422 (no imagery), 503 (EE unavailable), 200 with empty segments (zero detections).
+**Error responses**: 404 (LGA not found), 422 (no imagery), 503 (EE or Python sidecar unavailable).
 
 #### Updated `earthEngineService.ts`
 
-New function added:
+New function to download the HR satellite tile as a GeoTIFF for the Python sidecar:
 
 ```typescript
-// Runs SNIC object-based segmentation on Sentinel-2 to detect tree/vegetation objects
-async function runTreeSegmentation(
+// Downloads Sentinel-2 true-colour tile as a GeoTIFF to a temp path
+// Returns { tilePath, eeUrl } — tilePath is the local .tif file for the sidecar
+async function downloadHRTile(
   bbox: BBox,
   dateRange: DateRange,
-  lgaAreaKm2: number
-): Promise<{
-  eeUrl: string
-  segmentGeoJSON: GeoJSON.FeatureCollection
-  treeCount: number
-  totalAreaKm2: number
-  avgConfidence: number
-  coveragePct: number
-}>
+  outputPath: string
+): Promise<{ tilePath: string; eeUrl: string }>
 ```
+
+The existing `getMapTileUrl` pattern is reused for the proxied basemap tile URL returned to the frontend. The `downloadHRTile` function additionally saves the tile locally for the Python sidecar to process.
 
 #### Updated `SidePanel.tsx`
 
 - "Tree Segmentation" toggle button added alongside "LST Heatmap", "NDVI Vegetation", "None".
-- When active: fetches `/api/lga/:id/tree-segmentation`, shows three stat cards (`treeCount`, `totalAreaKm2`, `coveragePct`), emits `onTreeSegmentationChange`.
+- When active: fetches `/api/lga/:id/tree-segmentation`, shows three stat cards (`treeCount`, `totalAreaKm2 km²`, `coveragePct%`), emits `onTreeSegmentationChange`.
+- Loading spinner shown while Python sidecar runs (may take 15–60 seconds on first request).
 
 #### Updated `MapView.tsx`
 
-When tree segmentation is active, `MapView` renders **two layers**:
-1. **HR satellite basemap tile** — proxied Sentinel-2 true-colour PNG, rendered as SVG image overlay clipped to the LGA polygon (same pattern as LST/NDVI).
-2. **Segment polygon layer** — a Leaflet `GeoJSON` layer on top with semi-transparent green fill (`#22c55e`, opacity 0.4) and solid green stroke.
+When tree segmentation is active, renders **two layers**:
+1. **HR satellite basemap** — proxied Sentinel-2 true-colour PNG, SVG clip-masked to LGA polygon (same pattern as LST/NDVI).
+2. **Segment polygon layer** — Leaflet `GeoJSON` layer on top with semi-transparent green fill (`#22c55e`, opacity 0.4) and solid green stroke, one polygon per detected tree crown.
 
 LGA boundary remains visible as a thin outline on top of both layers.
 
@@ -2201,6 +2296,8 @@ interface SegmentationContext {
 function buildSystemPrompt(heatStats: HeatStats, lgaName: string, segmentation?: SegmentationContext): string
 ```
 
+When `segmentation` is provided, the prompt includes: `"GeoAI tree segmentation detected {treeCount} individual tree crowns covering {coveragePct}% of the LGA ({totalAreaKm2} km²)."` and a contextual sentence about tree cover and UHI mitigation.
+
 ### Data Models
 
 #### New Table: `tree_segments`
@@ -2212,7 +2309,6 @@ CREATE TABLE IF NOT EXISTS tree_segments (
     geom             GEOMETRY(Polygon, 4326) NOT NULL,
     area_m2          NUMERIC(12, 4) NOT NULL,
     confidence       NUMERIC(5, 4) NOT NULL,
-    ndvi_mean        NUMERIC(6, 4),
     date_range_start DATE NOT NULL,
     date_range_end   DATE NOT NULL,
     processed_at     TIMESTAMPTZ DEFAULT NOW()
@@ -2227,7 +2323,7 @@ CREATE INDEX IF NOT EXISTS idx_tree_segments_geom
 
 #### Extended `gee_layers` table
 
-`layer_type = 'tree_segmentation'` stored alongside `'lst'` and `'ndvi'`. The `tile_url` holds the HR satellite basemap PNG. `avg_lst_celsius`, `avg_ndvi`, and `uhi_intensity` are `NULL` for segmentation rows.
+`layer_type = 'tree_segmentation'` stored alongside `'lst'` and `'ndvi'`. The `tile_url` holds the HR satellite basemap PNG URL. `avg_lst_celsius`, `avg_ndvi`, and `uhi_intensity` are `NULL` for segmentation rows.
 
 #### Updated TypeScript Types (`backend/src/types.ts`)
 
@@ -2238,7 +2334,6 @@ interface TreeSegment {
   geom: GeoJSON.Polygon
   areaM2: number
   confidence: number
-  ndviMean: number | null
   processedAt: string
 }
 
@@ -2260,114 +2355,97 @@ interface TreeSegmentationResult {
 type GeeLayerType = 'lst' | 'ndvi' | 'tree_segmentation'
 ```
 
-### GeoAI Segmentation Algorithm
-
-Uses GEE's **SNIC (Simple Non-Iterative Clustering)** — an object-based image analysis (OBIA) method that groups spatially and spectrally similar pixels into coherent superpixel objects. Vegetation objects are then extracted as individual tree/cluster polygons.
+### GeoAI Pipeline
 
 ```mermaid
 graph LR
-    S2["Sentinel-2 SR Harmonized\n(COPERNICUS/S2_SR_HARMONIZED)"]
-    Filter["Filter: bounds + date range\nCLOUDY_PIXEL_PERCENTAGE < 20"]
-    Median["Composite: .median()"]
-    NDVI["Compute NDVI band\n(B8 - B4) / (B8 + B4)"]
-    SNIC["SNIC Segmentation\nee.Algorithms.Image.Segmentation.SNIC\n(size=10, compactness=0.5, connectivity=8)"]
-    VegFilter["Filter segments:\nmean NDVI > 0.35\narea > 10 m²"]
-    Vectors["reduceToVectors → GeoJSON polygons\nwith { areaM2, confidence, ndviMean }"]
-    Basemap["True-colour basemap tile\nBands B4/B3/B2 → EE Thumbnails API"]
-    Store["INSERT INTO tree_segments\n+ INSERT INTO gee_layers"]
+    EE["Google Earth Engine\nSentinel-2 true-colour tile\n(B4/B3/B2, 10m resolution)"]
+    TIF["satellite_tile.tif\n(local temp file)"]
+    CLIP["geoai.CLIPSegmentation\ntext_prompt='trees'\nthreshold=0.4\ntile_size=512, overlap=32"]
+    MASK["tree_masks.tif\n(binary raster mask)"]
+    VEC["geoai.raster_to_vector\nmin_area=10 m²\n→ GeoDataFrame"]
+    GEOJSON["GeoJSON FeatureCollection\n{ area_m2, confidence }"]
+    DB["PostGIS\ntree_segments table\n(bulk INSERT)"]
 
-    S2 --> Filter --> Median --> NDVI
-    Median --> SNIC
-    NDVI --> SNIC
-    SNIC --> VegFilter --> Vectors --> Store
-    Median --> Basemap --> Store
+    EE --> TIF --> CLIP --> MASK --> VEC --> GEOJSON --> DB
 ```
 
 #### Algorithmic Pseudocode
 
 ```pascal
-ALGORITHM runTreeSegmentation(bbox, dateRange, lgaAreaKm2)
-INPUT:  bbox: BBox, dateRange: DateRange, lgaAreaKm2: number
-OUTPUT: { eeUrl, segmentGeoJSON, treeCount, totalAreaKm2, avgConfidence, coveragePct }
+ALGORITHM computeAndStoreSegmentation(lgaId, bbox, areaKm2, dateRange)
+INPUT:  lgaId: string, bbox: BBox, areaKm2: number, dateRange: DateRange
+OUTPUT: TreeSegmentationResult
 
 BEGIN
+  ASSERT lgaId IS NOT NULL
   ASSERT bbox.west < bbox.east AND bbox.south < bbox.north
   ASSERT dateRange.start < dateRange.end
-  ASSERT lgaAreaKm2 > 0
+  ASSERT areaKm2 > 0
 
-  region ← ee.Geometry.Rectangle([bbox.west, bbox.south, bbox.east, bbox.north])
+  // Step 1: Download HR satellite tile from EE
+  { tilePath, eeUrl } ← downloadHRTile(bbox, dateRange, '/tmp/tile_' + lgaId + '.tif')
 
-  collection ← ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
-    .filterBounds(region)
-    .filterDate(dateRange.start, dateRange.end)
-    .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 20))
+  // Step 2: Spawn Python sidecar with geoai-py CLIPSeg
+  proc ← child_process.spawn('python3', ['scripts/tree_segment.py',
+    '--tile', tilePath, '--bbox', JSON.stringify(bbox),
+    '--output', '/tmp/segments_' + lgaId + '.geojson'
+  ])
 
-  IF collection.size() = 0 THEN
-    RAISE Error("No Sentinel-2 imagery available for date range")
-  END IF
+  // Step 3: Parse stdout JSON from Python sidecar
+  { segments, treeCount, totalAreaKm2, avgConfidence } ← JSON.parse(proc.stdout)
 
-  composite ← collection.median().clip(region)
-  ndvi ← composite.normalizedDifference(["B8", "B4"]).rename("ndvi")
-  inputImage ← composite.select(["B2","B3","B4","B8"]).addBands(ndvi)
-
-  // SNIC object-based segmentation
-  seeds ← ee.Algorithms.Image.Segmentation.seedGrid(10)
-  snic ← ee.Algorithms.Image.Segmentation.SNIC({
-    image: inputImage, size: 10, compactness: 0.5,
-    connectivity: 8, neighborhoodSize: 256, seeds: seeds
-  })
-
-  // Filter to vegetation objects: mean NDVI > 0.35 AND area > 10 m²
-  vegMask ← snic.select("ndvi_mean").gt(0.35)
-  vegClusters ← snic.updateMask(vegMask)
-
-  vectors ← vegClusters.select("clusters").reduceToVectors({
-    reducer: ee.Reducer.mean(), geometry: region,
-    scale: 10, maxPixels: 1e9, geometryType: "polygon"
-  })
-
-  vectors ← vectors.map(f => f.set({
-    area_m2: f.geometry().area(1),
-    confidence: f.get("ndvi_mean"),
-    ndvi_mean: f.get("ndvi_mean")
-  })).filter(ee.Filter.gt("area_m2", 10))
-
-  treeCount ← vectors.size()
-  totalAreaKm2 ← vectors.aggregate_sum("area_m2") / 1e6
-  avgConfidence ← vectors.aggregate_mean("confidence")
-  coveragePct ← (totalAreaKm2 / lgaAreaKm2) * 100
-
+  // Step 4: Compute coverage
+  coveragePct ← (totalAreaKm2 / areaKm2) * 100
   ASSERT coveragePct >= 0 AND coveragePct <= 100
-  ASSERT avgConfidence >= 0 AND avgConfidence <= 1
 
-  basemap ← composite.select(["B4","B3","B2"]).visualize({ min: 0, max: 3000, gamma: 1.4 })
-  eeUrl ← callEEThumbnailsAPI(basemap, bbox)
-  segmentGeoJSON ← vectors.getInfo()
+  // Step 5: Build proxied tile URL
+  tileUrl ← '/api/lga/' + lgaId + '/tile-image?type=tree_segmentation&start=' + dateRange.start + '&end=' + dateRange.end
 
-  RETURN { eeUrl, segmentGeoJSON, treeCount, totalAreaKm2, avgConfidence, coveragePct }
+  // Step 6: Bulk-insert segment polygons into PostGIS
+  FOR EACH feature IN segments.features DO
+    INSERT INTO tree_segments (lga_id, geom, area_m2, confidence, date_range_start, date_range_end)
+    VALUES (lgaId, ST_GeomFromGeoJSON(feature.geometry), feature.properties.area_m2,
+            feature.properties.confidence, dateRange.start, dateRange.end)
+  END FOR
+
+  // Step 7: Insert basemap tile into gee_layers
+  INSERT INTO gee_layers (lga_id, layer_type, date_range_start, date_range_end, tile_url, ee_url)
+  VALUES (lgaId, 'tree_segmentation', dateRange.start, dateRange.end, tileUrl, eeUrl)
+
+  // Step 8: Clean up temp files
+  DELETE tilePath, tilePath.replace('.tif', '_mask.tif')
+
+  RETURN {
+    lgaId, lgaName, treeCount, totalAreaKm2, avgConfidence,
+    coveragePct, tileUrl, bbox, segments, dateRangeStart: dateRange.start,
+    dateRangeEnd: dateRange.end, processedAt: NOW()
+  }
 END
 ```
 
 **Preconditions:**
 - `bbox` is a valid geographic rectangle within Australia
 - `dateRange` spans at least 30 days
-- Earth Engine is authenticated and initialised
-- `lgaAreaKm2 > 0`
+- Earth Engine is authenticated
+- Python 3 and `geoai-py` are installed on the server (`pip install geoai-py`)
+- `areaKm2 > 0`
 
 **Postconditions:**
 - `coveragePct ∈ [0, 100]`
 - `avgConfidence ∈ [0, 1]`
-- `segmentGeoJSON` is a valid FeatureCollection; each feature has `area_m2 > 10`, `confidence ∈ [0,1]`, `ndvi_mean > 0.35`
-- `eeUrl` is a valid EE thumbnail URL for the HR basemap
+- `segments` is a valid GeoJSON FeatureCollection; each feature has `area_m2 > 10`
+- All segment rows inserted into `tree_segments`
+- Temp files cleaned up
 - No mutations to input parameters
 
 ### Key Functions with Formal Specifications
 
-#### `runTreeSegmentation(bbox, dateRange, lgaAreaKm2)` — earthEngineService
+#### `runPythonSidecar(tilePath, bbox)` — treeSegmentationService
 
-**Preconditions:** `bbox.west < bbox.east`, `bbox.south < bbox.north`, `dateRange.start < dateRange.end`, `lgaAreaKm2 > 0`, EE authenticated.
+**Preconditions:** `tilePath` is a valid path to an existing `.tif` file; `bbox` is valid; Python 3 and `geoai-py` are installed.
 
-**Postconditions:** `coveragePct ∈ [0, 100]`, `avgConfidence ∈ [0, 1]`, `segmentGeoJSON` is valid FeatureCollection with `area_m2 > 10` per feature. No mutations to inputs.
+**Postconditions:** Returns `{ segments, treeCount, totalAreaKm2, avgConfidence }`. Throws if Python process exits non-zero. No mutations to inputs.
 
 ---
 
@@ -2375,7 +2453,7 @@ END
 
 **Preconditions:** `lgaId` non-empty, `dateRange.start < dateRange.end`, DB available.
 
-**Postconditions:** Returns fully populated `TreeSegmentationResult`. Cache hit returns DB rows without EE call. Cache miss calls `runTreeSegmentation`, bulk-inserts segments, inserts `gee_layers` row. Throws 404 if LGA not found, 503 if EE unavailable.
+**Postconditions:** Returns fully populated `TreeSegmentationResult`. Cache hit returns DB rows without calling EE or Python. Cache miss calls `computeAndStoreSegmentation`. Throws 404 if LGA not found, 503 if EE or Python sidecar fails.
 
 ---
 
@@ -2389,7 +2467,7 @@ END
 
 #### Property 34: Segment polygons are valid GeoJSON
 
-*For any* successful call to `runTreeSegmentation`, the returned `segmentGeoJSON` is a valid GeoJSON FeatureCollection where every feature has a Polygon geometry, `area_m2 > 10`, `confidence ∈ [0, 1]`, and `ndvi_mean > 0.35`.
+*For any* successful sidecar run, the returned `segments` is a valid GeoJSON FeatureCollection where every feature has a Polygon geometry and `area_m2 > 10`.
 
 **Validates: Requirements 22.1, 22.2**
 
@@ -2397,7 +2475,7 @@ END
 
 #### Property 35: coveragePct is in [0, 100]
 
-*For any* valid LGA bounding box and date range, `runTreeSegmentation` returns `coveragePct ∈ [0, 100]`.
+*For any* `totalAreaKm2` and `lgaAreaKm2 > 0`, `coveragePct = (totalAreaKm2 / lgaAreaKm2) × 100 ∈ [0, 100]`.
 
 **Validates: Requirements 22.3**
 
@@ -2405,15 +2483,15 @@ END
 
 #### Property 36: totalAreaKm2 derivation correctness
 
-*For any* set of segment features, `totalAreaKm2 = sum(area_m2) / 1,000,000` and `coveragePct = (totalAreaKm2 / lgaAreaKm2) × 100`.
+*For any* set of segment features, `totalAreaKm2 = sum(area_m2) / 1,000,000`.
 
 **Validates: Requirements 22.3**
 
 ---
 
-#### Property 37: Tree segmentation cache hit avoids Earth Engine
+#### Property 37: Tree segmentation cache hit avoids EE and Python sidecar
 
-*For any* LGA ID and date range whose `tree_segments` rows exist in PostGIS, `getTreeSegmentation` returns the cached rows without invoking the EarthEngineService.
+*For any* LGA ID and date range whose `tree_segments` rows exist in PostGIS, `getTreeSegmentation` returns the cached rows without invoking EE or spawning the Python sidecar.
 
 **Validates: Requirements 22.4**
 
@@ -2421,7 +2499,7 @@ END
 
 #### Property 38: Tree segmentation cache miss triggers computation and storage
 
-*For any* LGA ID and date range with no `tree_segments` rows, `getTreeSegmentation` invokes `runTreeSegmentation` and bulk-inserts the resulting segment rows before returning.
+*For any* LGA ID and date range with no `tree_segments` rows, `getTreeSegmentation` spawns the Python sidecar and bulk-inserts the resulting segment rows before returning.
 
 **Validates: Requirements 22.4**
 
@@ -2439,21 +2517,23 @@ END
 
 | Scenario | Behaviour |
 |---|---|
-| No Sentinel-2 imagery for date range | Return HTTP 422 with `{ error: "No Sentinel-2 imagery available for this area and period" }` |
+| No Sentinel-2 imagery for date range | Return HTTP 422 with `{ error: "No satellite imagery available for this area and period" }` |
 | Earth Engine unavailable | Return HTTP 503 with `{ error: "Earth Engine service unavailable" }` |
+| Python sidecar exits non-zero | Return HTTP 503 with `{ error: "Tree segmentation service unavailable" }`; log stderr |
+| Python / geoai-py not installed | Return HTTP 503 with `{ error: "Tree segmentation service unavailable" }`; log install instructions |
 | LGA not found | Return HTTP 404 with `{ error: "LGA not found" }` |
-| SNIC produces zero segments after vegetation filter | Return HTTP 200 with `treeCount: 0`, empty `segments` FeatureCollection |
+| CLIPSeg produces zero segments | Return HTTP 200 with `treeCount: 0`, empty `segments` FeatureCollection |
 | Database connection failure | Return HTTP 500 with generic error; log server-side |
 
 ### Testing Strategy
 
 **Unit tests**:
-- `runTreeSegmentation`: mock EE, assert SNIC called with correct params, assert output shape and constraints
-- `getTreeSegmentation`: cache hit returns DB rows without EE call; cache miss calls EE and bulk-inserts rows
+- `runPythonSidecar`: mock `child_process.spawn`, assert correct args, assert JSON parsing of stdout
+- `getTreeSegmentation`: cache hit returns DB rows without spawning Python; cache miss spawns sidecar and bulk-inserts
 - `buildSystemPrompt` with segmentation: assert segmentation fields appear in output; assert purity
 
 **Property-based tests** (fast-check):
-- Property 35: for any mocked segment list and `lgaAreaKm2 > 0`, `coveragePct ∈ [0, 100]`
+- Property 35: for any `totalAreaKm2 ≥ 0` and `lgaAreaKm2 > 0`, `coveragePct ∈ [0, 100]`
 - Property 36: for any segment list, `totalAreaKm2 = sum(area_m2) / 1e6`
 - Property 39: for any valid inputs with segmentation context, prompt is non-empty, deterministic, and contains segmentation values
 
@@ -2461,9 +2541,24 @@ END
 
 ### Dependencies
 
-No new infrastructure dependencies. Uses existing:
+**New Python dependency** (server-side only):
+```bash
+pip install geoai-py
+```
+
+**No new Node.js dependencies** — uses built-in `child_process` module.
+
+**Existing dependencies reused**:
 - `COPERNICUS/S2_SR_HARMONIZED` — already authenticated and in use for NDVI
-- `ee.Algorithms.Image.Segmentation.SNIC` — built-in GEE algorithm, no external model hosting
-- `@google/earthengine` — existing EE SDK
+- `@google/earthengine` — existing EE SDK for tile download
 - `pg` — existing PostgreSQL client
 - EE Thumbnails REST API — same pattern as LST/NDVI tile generation
+
+### VM Setup Note
+
+On the Ubuntu VM, run once:
+```bash
+pip install geoai-py
+# Verify installation
+python3 -c "import geoai; print('geoai-py ready')"
+```

@@ -1,9 +1,9 @@
-# Implementation Plan: HeatGPT
+﻿# Implementation Plan: HeatGPT
 
 ## Overview
 
 Incremental build following the design's three-phase approach:
-1. Manual data prep — load ABS LGA Shapefile into PostGIS via pgShapeLoader + pgAdmin4 (operator step, no code)
+1. Manual data prep â€” load ABS LGA Shapefile into PostGIS via pgShapeLoader + pgAdmin4 (operator step, no code)
 2. Map + LGA boundaries (`/api/lgas`, MapView)
 3. Earth Engine integration (heat stats API, HeatService, EarthEngineService, SidePanel)
 4. Chat interface (ChatService, `/api/chat`, ChatInterface)
@@ -24,7 +24,7 @@ Stack: TypeScript (Node.js/Express backend, React frontend), PostgreSQL + PostGI
   - _Requirements: 12.1, 12.2, 12.3, 12.4_
 
 - [x] 2. Manual LGA Shapefile import (operator pre-requisite)
-  - This is a one-time manual data preparation step using pgShapeLoader and pgAdmin4 — no code to write.
+  - This is a one-time manual data preparation step using pgShapeLoader and pgAdmin4 â€” no code to write.
   - [x] 2.1 Load the ABS LGA Shapefile using pgShapeLoader
     - Open pgShapeLoader (Start > PostGIS Bundle > PostGIS Shapefile Import/Export Manager)
     - Connect to local PostgreSQL: host `localhost`, database `heatgpt`, user `postgres`
@@ -98,7 +98,7 @@ Stack: TypeScript (Node.js/Express backend, React frontend), PostgreSQL + PostGI
     - For any rendered LGA feature, clicking the polygon emits exactly `feature.properties.lga_id` via `onLgaSelect`
     - **Validates: Requirements 1.4**
 
-- [ ] 4. Checkpoint — map and import working
+- [ ] 4. Checkpoint â€” map and import working
   - Ensure all tests pass, ask the user if questions arise.
 
 - [x] 5. Staleness detection and HeatService core
@@ -167,14 +167,14 @@ Stack: TypeScript (Node.js/Express backend, React frontend), PostgreSQL + PostGI
     - For any `HeatStats` object, rendered SidePanel contains LGA name, `avgLstCelsius`, `avgNdvi`, `uhiIntensity`, and `ChatInterface` with correct props
     - **Validates: Requirements 7.1, 7.3**
 
-- [ ] 7. Checkpoint — map, heat stats, and side panel working
+- [ ] 7. Checkpoint â€” map, heat stats, and side panel working
   - Ensure all tests pass, ask the user if questions arise.
 
 - [x] 8. Chat prompt construction and chat API
   - [x] 8.1 Implement `ChatService` in `backend/src/services/chatService.ts`
     - `buildSystemPrompt(heatStats, lgaName)`: pure function returning non-empty string with all required fields and UHI/vegetation descriptions per threshold logic in Algorithm 3
     - `sendMessage(messages, systemPrompt)`: call LLM API (OpenAI or Gemini), return answer string
-    - _Requirements: 10.1–10.10, 9.1_
+    - _Requirements: 10.1â€“10.10, 9.1_
 
   - [ ]* 8.2 Write property test for buildSystemPrompt purity and completeness (Property 7)
     - **Property 7: buildSystemPrompt is pure and complete**
@@ -183,12 +183,12 @@ Stack: TypeScript (Node.js/Express backend, React frontend), PostgreSQL + PostGI
 
   - [ ]* 8.3 Write property test for UHI description thresholds (Property 8)
     - **Property 8: UHI description thresholds**
-    - For any `HeatStats`, prompt includes exactly the correct UHI description based on `uhiIntensity` thresholds (>3.0, 1.5–3.0, 0.0–1.5, ≤0.0)
+    - For any `HeatStats`, prompt includes exactly the correct UHI description based on `uhiIntensity` thresholds (>3.0, 1.5â€“3.0, 0.0â€“1.5, â‰¤0.0)
     - **Validates: Requirements 10.2, 10.3, 10.4, 10.5**
 
   - [ ]* 8.4 Write property test for vegetation description thresholds (Property 9)
     - **Property 9: Vegetation description thresholds**
-    - For any `HeatStats`, prompt includes exactly the correct vegetation description based on `avgNdvi` thresholds (>0.5, 0.3–0.5, 0.1–0.3, ≤0.1)
+    - For any `HeatStats`, prompt includes exactly the correct vegetation description based on `avgNdvi` thresholds (>0.5, 0.3â€“0.5, 0.1â€“0.3, â‰¤0.1)
     - **Validates: Requirements 10.6, 10.7, 10.8, 10.9**
 
   - [x] 8.5 Implement `POST /api/chat` route in `backend/src/routes/chat.ts`
@@ -199,7 +199,7 @@ Stack: TypeScript (Node.js/Express backend, React frontend), PostgreSQL + PostGI
 
   - [ ]* 8.6 Write property test for chat API valid inputs (Property 10)
     - **Property 10: Chat API returns non-empty answer for valid inputs**
-    - For any valid `lgaId`, non-empty question ≤500 chars, and valid `HeatStats`, response is HTTP 200 with non-empty `answer`
+    - For any valid `lgaId`, non-empty question â‰¤500 chars, and valid `HeatStats`, response is HTTP 200 with non-empty `answer`
     - **Validates: Requirements 9.1**
 
   - [ ]* 8.7 Write property test for chat API input rejection (Property 11)
@@ -241,7 +241,7 @@ Stack: TypeScript (Node.js/Express backend, React frontend), PostgreSQL + PostGI
     - Call `initEarthEngine()` on startup
     - _Requirements: 2.5, 9.5, 14.2_
 
-- [ ] 13. Final checkpoint — all tests pass
+- [ ] 13. Final checkpoint â€” all tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
 ---
@@ -251,7 +251,7 @@ Stack: TypeScript (Node.js/Express backend, React frontend), PostgreSQL + PostGI
 - Tasks marked with `*` are optional and can be skipped for a faster MVP
 - Property tests use `fast-check` as specified in the design's testing strategy
 - Each property task references the property number from the design document for traceability
-- The build order mirrors the design's incremental phases: map → heat stats → chat → scheduler
+- The build order mirrors the design's incremental phases: map â†’ heat stats â†’ chat â†’ scheduler
 
 - [x] 14. Replace Leaflet MapView with CesiumJS 3D viewer
   - [x] 14.1 Install resium and cesium packages in frontend
@@ -289,21 +289,21 @@ Stack: TypeScript (Node.js/Express backend, React frontend), PostgreSQL + PostGI
   - [x] 15.5 Update MapView to render SVG clip-masked image overlay matching LGA polygon shape
   - [x] 15.6 Add layer toggle buttons (LST Heatmap / NDVI Vegetation / None) to SidePanel
   - [x] 15.7 Reduce LGA polygon fill opacity when satellite layer is active
-  - _Requirements: 17.1–17.10_
+  - _Requirements: 17.1â€“17.10_
 
 - [x] 16. Custom date range for satellite visualisation
   - [x] 16.1 Add From/To date inputs and Apply/Reset buttons below layer toggles in SidePanel
-  - [x] 16.2 Wire custom date range to tile query — re-fetches layer for specified period
+  - [x] 16.2 Wire custom date range to tile query â€” re-fetches layer for specified period
   - [x] 16.3 Show "No satellite data found for this period" on 422 response
   - [x] 16.4 Show active period label when custom range is applied
-  - _Requirements: 18.1–18.6_
+  - _Requirements: 18.1â€“18.6_
 
 - [x] 17. Enhanced SidePanel analytics
   - [x] 17.1 Add heat risk badge with colour-coded UHI thresholds
   - [x] 17.2 Add temperature trend line chart (recharts) with 4 x 90-day windows
   - [x] 17.3 Add NDVI vs LST horizontal progress bars
   - [x] 17.4 Add timespan selector (30d/90d/180d/1yr) wired to heat stats fetch
-  - _Requirements: 19.1–19.5_
+  - _Requirements: 19.1â€“19.5_
 
 - [x] 18. Move north arrow to right top corner
   - [x] 18.1 Update MapControls component positioning
@@ -323,13 +323,13 @@ Stack: TypeScript (Node.js/Express backend, React frontend), PostgreSQL + PostGI
     - Export a single async function `exportMapPdf(options: ExportPdfOptions): Promise<void>`
     - `ExportPdfOptions`: `{ lgaName, layerType, dateRangeStart, dateRangeEnd, scaleInfo }`
     - Capture `document.getElementById('map')` with `html2canvas({ useCORS: true, scale: 2 })`
-    - Create `jsPDF('landscape', 'mm', 'a4')` (297 × 210 mm)
-    - Draw title bar (8 mm, dark background, white bold text): `"{lgaName} — LST Heatmap"` or `"{lgaName} — NDVI Vegetation"`
+    - Create `jsPDF('landscape', 'mm', 'a4')` (297 Ã— 210 mm)
+    - Draw title bar (8 mm, dark background, white bold text): `"{lgaName} â€” LST Heatmap"` or `"{lgaName} â€” NDVI Vegetation"`
     - Scale canvas to fill page width (297 mm), max height ~170 mm; add map image via `doc.addImage`
     - Draw bottom strip (32 mm): legend swatches + labels | scale bar with tick marks | data sources text
     - Legend reuses `LST_PALETTE` / `NDVI_PALETTE` colour arrays (copy or import from MapControls)
     - Scale bar drawn with `doc.line` / `doc.text` using `scaleInfo.label`
-    - Data sources: `"Satellite data: Landsat 9 (LST)"` or `"Satellite data: Sentinel-2 (NDVI)"` + `"Date range: {start} – {end}"`
+    - Data sources: `"Satellite data: Landsat 9 (LST)"` or `"Satellite data: Sentinel-2 (NDVI)"` + `"Date range: {start} â€“ {end}"`
     - Filename: `{lga-name-kebab}-{layer-type}-{YYYY-MM-DD}.pdf` (lowercase, hyphens, today's date)
     - Do not mutate any input fields
     - _Requirements: 20.3, 20.4, 20.5, 20.6, 20.7, 20.8, 20.11, 20.12, 20.13, 20.14_
@@ -345,7 +345,7 @@ Stack: TypeScript (Node.js/Express backend, React frontend), PostgreSQL + PostGI
 
   - [x] 19.4 Update `App.tsx` to pass new props to `MapControls`
     - Extend `TileLayer` type with `dateRangeStart?: string` and `dateRangeEnd?: string`
-    - Derive `lgaName` from React Query cache: `qc.getQueryData<GeoJSON.FeatureCollection>(['lgas'])` → find feature where `properties.lga_id === selectedLgaId` → `properties.lga_name`
+    - Derive `lgaName` from React Query cache: `qc.getQueryData<GeoJSON.FeatureCollection>(['lgas'])` â†’ find feature where `properties.lga_id === selectedLgaId` â†’ `properties.lga_name`
     - Pass `lgaName`, `dateRangeStart={activeTileLayer?.dateRangeStart}`, `dateRangeEnd={activeTileLayer?.dateRangeEnd}` to `<MapControls>`
     - Update `handleTileLayerChange` to forward `dateRangeStart` / `dateRangeEnd` from the layer object emitted by `SidePanel`
     - _Requirements: 20.4, 20.7_
@@ -383,9 +383,9 @@ Stack: TypeScript (Node.js/Express backend, React frontend), PostgreSQL + PostGI
     - _Requirements: 21.9_
 
   - [ ] 20.2 Create geeLayerService.ts
-    - Implement `getGeeLayer(lgaId, layerType, dateRange)` — DB-first lookup, fetch from GEE on cache miss
-    - Implement `computeAndStoreGeeLayer(lgaId, layerType, bbox, dateRange)` — Fetch from GEE + auto-save to DB
-    - Implement `mapRowToGeeLayerRecord(row)` — Map DB row to TypeScript type
+    - Implement `getGeeLayer(lgaId, layerType, dateRange)` â€” DB-first lookup, fetch from GEE on cache miss
+    - Implement `computeAndStoreGeeLayer(lgaId, layerType, bbox, dateRange)` â€” Fetch from GEE + auto-save to DB
+    - Implement `mapRowToGeeLayerRecord(row)` â€” Map DB row to TypeScript type
     - Optional: `isGeeLayerStale(exportedAt, maxAgeDays)` (can reuse from heatService)
     - _Requirements: 21.1, 21.2, 21.3, 21.4, 21.5, 21.10_
 
@@ -428,7 +428,8 @@ Stack: TypeScript (Node.js/Express backend, React frontend), PostgreSQL + PostGI
     - **Validates: Requirements 21.9**
 
 
-- [ ] 21. Tree Segmentation (GeoAI)
+
+- [ ] 21. Tree Segmentation (GeoAI — geoai-py + CLIPSeg)
   - [ ] 21.1 Add `tree_segments` table to database schema
     - Add DDL to `backend/src/db/schema.sql`:
       ```sql
@@ -438,7 +439,6 @@ Stack: TypeScript (Node.js/Express backend, React frontend), PostgreSQL + PostGI
           geom             GEOMETRY(Polygon, 4326) NOT NULL,
           area_m2          NUMERIC(12, 4) NOT NULL,
           confidence       NUMERIC(5, 4) NOT NULL,
-          ndvi_mean        NUMERIC(6, 4),
           date_range_start DATE NOT NULL,
           date_range_end   DATE NOT NULL,
           processed_at     TIMESTAMPTZ DEFAULT NOW()
@@ -452,93 +452,99 @@ Stack: TypeScript (Node.js/Express backend, React frontend), PostgreSQL + PostGI
     - _Requirements: 22.3, 22.15_
 
   - [ ] 21.2 Add `TreeSegment` and `TreeSegmentationResult` types to `backend/src/types.ts`
-    - Add `TreeSegment` interface: `id`, `lgaId`, `geom`, `areaM2`, `confidence`, `ndviMean`, `processedAt`
+    - Add `TreeSegment` interface: `id`, `lgaId`, `geom`, `areaM2`, `confidence`, `processedAt`
     - Add `TreeSegmentationResult` interface: `lgaId`, `lgaName`, `treeCount`, `totalAreaKm2`, `avgConfidence`, `coveragePct`, `tileUrl`, `bbox`, `segments` (GeoJSON FeatureCollection), `dateRangeStart`, `dateRangeEnd`, `processedAt`
     - Extend `GeeLayerType` to `'lst' | 'ndvi' | 'tree_segmentation'`
     - _Requirements: 22.5_
 
-  - [ ] 21.3 Add `runTreeSegmentation` to `earthEngineService.ts`
-    - Use `COPERNICUS/S2_SR_HARMONIZED`, filter by bounds + date range + `CLOUDY_PIXEL_PERCENTAGE < 20`, build median composite
-    - Compute NDVI band and add to composite as input to SNIC
-    - Run `ee.Algorithms.Image.Segmentation.SNIC({ size: 10, compactness: 0.5, connectivity: 8 })`
-    - Filter resulting segments: `ndvi_mean > 0.35` AND `area_m2 > 10`
-    - Call `reduceToVectors` to export segment polygons as GeoJSON FeatureCollection with `{ area_m2, confidence, ndvi_mean }` properties
-    - Compute summary stats: `treeCount`, `totalAreaKm2`, `avgConfidence`, `coveragePct`
-    - Generate HR true-colour basemap tile (B4/B3/B2) via EE Thumbnails API (same pattern as `getMapTileUrl`)
-    - Return `{ eeUrl, segmentGeoJSON, treeCount, totalAreaKm2, avgConfidence, coveragePct }`
-    - Raise error if Sentinel-2 collection is empty; return empty FeatureCollection if zero segments after filter
-    - _Requirements: 22.1, 22.2, 22.3_
+  - [ ] 21.3 Create Python sidecar script `backend/scripts/tree_segment.py`
+    - Install `geoai-py` on the server: `pip install geoai-py`
+    - Script accepts `--tile` (path to .tif), `--bbox` (JSON string), `--output` (output path) via argparse
+    - Run `geoai.CLIPSegmentation(tile_size=512, overlap=32)` with `text_prompts=["trees"]`, `threshold=0.4`
+    - Convert raster mask to vector polygons via `geoai.raster_to_vector(mask_path, min_area=10)`
+    - Compute `area_m2` and `confidence` per feature; reproject to EPSG:4326
+    - Print JSON to stdout: `{ segments: GeoJSON, treeCount, totalAreaKm2, avgConfidence }`
+    - Exit code 0 on success, non-zero on failure with error message to stderr
+    - _Requirements: 22.1, 22.2_
 
-  - [ ] 21.4 Create `backend/src/services/treeSegmentationService.ts`
-    - Implement `getTreeSegmentation(lgaId, dateRange)`: query `tree_segments` for cached rows; on cache miss call `runTreeSegmentation`, bulk-insert segment rows, insert `gee_layers` row (`layer_type='tree_segmentation'`), return `TreeSegmentationResult`
-    - Implement `computeAndStoreSegmentation(lgaId, bbox, areaKm2, dateRange)`: call EE, build proxied `tileUrl` (`/api/lga/:id/tile-image?type=tree_segmentation&...`), bulk-insert `tree_segments`, insert `gee_layers`, return result
-    - Reconstruct `TreeSegmentationResult` from cached DB rows (aggregate stats + GeoJSON from stored geometries)
-    - Throw 404 if LGA not found; throw 503 on EE failure
-    - _Requirements: 22.3, 22.4, 22.5, 22.11_
+  - [ ] 21.4 Add `downloadHRTile` to `earthEngineService.ts`
+    - Download Sentinel-2 true-colour tile (B4/B3/B2) as a GeoTIFF to a temp path using EE REST API
+    - Also generate the proxied basemap tile URL (same pattern as `getMapTileUrl`)
+    - Return `{ tilePath: string, eeUrl: string }`
+    - Raise error if no Sentinel-2 imagery available for the date range
+    - _Requirements: 22.1_
 
-  - [ ] 21.5 Add `GET /api/lga/:id/tree-segmentation` route to `backend/src/routes/lga.ts`
+  - [ ] 21.5 Create `backend/src/services/treeSegmentationService.ts`
+    - Implement `runPythonSidecar(tilePath, bbox)`: spawn `python3 scripts/tree_segment.py` via `child_process.spawn`, collect stdout, parse JSON, reject on non-zero exit code
+    - Implement `getTreeSegmentation(lgaId, dateRange)`: query `tree_segments` for cached rows; on cache miss call `computeAndStoreSegmentation`; reconstruct `TreeSegmentationResult` from DB rows (aggregate stats + GeoJSON from stored geometries)
+    - Implement `computeAndStoreSegmentation(lgaId, bbox, areaKm2, dateRange)`: call `downloadHRTile`, spawn Python sidecar, compute `coveragePct`, bulk-insert `tree_segments`, insert `gee_layers` row (`layer_type='tree_segmentation'`), clean up temp files, return result
+    - Throw 404 if LGA not found; throw 503 on EE or Python sidecar failure
+    - _Requirements: 22.1, 22.2, 22.3, 22.4, 22.5, 22.11_
+
+  - [ ] 21.6 Add `GET /api/lga/:id/tree-segmentation` route to `backend/src/routes/lga.ts`
     - Parse optional `start` and `end` query params; default to 90-day window
     - Delegate to `treeSegmentationService.getTreeSegmentation`
     - Return HTTP 200 with `TreeSegmentationResult` JSON; handle 404, 422, 503, and zero-segment 200 per design
     - Update `/api/lga/:id/tile-image` proxy to accept `type=tree_segmentation`
     - _Requirements: 22.4, 22.5, 22.12, 22.13, 22.14_
 
-  - [ ] 21.6 Extend `chatService.ts` to include segmentation context in system prompt
+  - [ ] 21.7 Extend `chatService.ts` to include segmentation context in system prompt
     - Add optional `segmentation?: { treeCount: number; totalAreaKm2: number; coveragePct: number; avgConfidence: number }` parameter to `buildSystemPrompt`
-    - When provided, append tree count, coverage %, area, and UHI relationship context to the prompt
+    - When provided, append GeoAI tree count, coverage %, area, and UHI relationship context to the prompt
     - Function must remain pure
     - _Requirements: 22.6_
 
-  - [ ] 21.7 Update `SidePanel.tsx` to add Tree Segmentation toggle and stat cards
+  - [ ] 21.8 Update `SidePanel.tsx` to add Tree Segmentation toggle and stat cards
     - Add `'tree_segmentation'` to the `activeLayer` state type
     - Add "Tree Segmentation" button to the layer toggle row alongside LST/NDVI/None
     - Add `useQuery` for `/api/lga/:id/tree-segmentation` (enabled when `activeLayer === 'tree_segmentation'`)
+    - Show loading spinner while query is in-flight (first request may take 15–60 seconds for CLIPSeg)
     - When data is loaded, show three stat cards: "Trees Detected" (`treeCount`), "Tree Cover" (`coveragePct`%), "Total Area" (`totalAreaKm2` km²)
     - Emit `onTreeSegmentationChange({ tileUrl, segments, bbox, type: 'tree_segmentation', dateRangeStart, dateRangeEnd })` when data arrives
     - Pass segmentation stats to `ChatInterface` for forwarding to the chat API
     - _Requirements: 22.7, 22.8_
 
-  - [ ] 21.8 Update `MapView.tsx` to render HR basemap + segment polygon layer
+  - [ ] 21.9 Update `MapView.tsx` to render HR basemap + segment polygon layer
     - When `activeTileLayer.type === 'tree_segmentation'`:
       - Render HR satellite basemap PNG as SVG clip-masked image overlay (same pattern as LST/NDVI)
-      - Add a Leaflet `GeoJSON` layer on top of the basemap rendering `activeTileLayer.segments` with semi-transparent green fill (`#22c55e`, opacity 0.4) and solid green stroke
+      - Add a Leaflet `GeoJSON` layer on top rendering `activeTileLayer.segments` with semi-transparent green fill (`#22c55e`, opacity 0.4) and solid green stroke
       - Keep LGA boundary polygon visible as a thin outline on top of both layers
     - Remove segment GeoJSON layer when layer type changes away from `'tree_segmentation'`
     - _Requirements: 22.9, 22.10_
 
-  - [ ] 21.9 Update `App.tsx` for `tree_segmentation` layer type
-    - Extend `TileLayer` type: add `type: 'lst' | 'ndvi' | 'tree_segmentation'` and `segments?: GeoJSON.FeatureCollection | null`
+  - [ ] 21.10 Update `App.tsx` for `tree_segmentation` layer type
+    - Extend `TileLayer` type: `type: 'lst' | 'ndvi' | 'tree_segmentation'` and `segments?: GeoJSON.FeatureCollection | null`
     - Add `onTreeSegmentationChange` handler that sets `activeTileLayer` with segments included
     - Pass `activeTileLayer` (including segments) to `MapView`
     - _Requirements: 22.9_
 
-  - [ ] 21.10 Update `ChatInterface.tsx` and `POST /api/chat` to forward segmentation context
+  - [ ] 21.11 Update `ChatInterface.tsx` and `POST /api/chat` to forward segmentation context
     - Add optional `segmentationStats?: { treeCount: number; totalAreaKm2: number; coveragePct: number; avgConfidence: number }` to the chat request body
     - Update `POST /api/chat` route to pass `segmentationStats` to `buildSystemPrompt`
     - Update `ChatInterface` to include `segmentationStats` in the request when available
     - _Requirements: 22.6_
 
-  - [ ]* 21.11 Write property test for segment polygon validity (Property 34)
+  - [ ]* 21.12 Write property test for segment polygon validity (Property 34)
     - **Property 34: Segment polygons are valid GeoJSON**
-    - For any mocked SNIC output, all returned features have Polygon geometry, `area_m2 > 10`, `confidence ∈ [0,1]`, `ndvi_mean > 0.35`
+    - For any mocked sidecar output, all returned features have Polygon geometry and `area_m2 > 10`
     - **Validates: Requirements 22.1, 22.2**
 
-  - [ ]* 21.12 Write property test for coveragePct range (Property 35)
+  - [ ]* 21.13 Write property test for coveragePct range (Property 35)
     - **Property 35: coveragePct is in [0, 100]**
-    - For any mocked segment list and `lgaAreaKm2 > 0`, `coveragePct ∈ [0, 100]`
+    - For any `totalAreaKm2 ≥ 0` and `lgaAreaKm2 > 0`, `coveragePct ∈ [0, 100]`
     - **Validates: Requirements 22.3**
 
-  - [ ]* 21.13 Write property test for totalAreaKm2 derivation (Property 36)
+  - [ ]* 21.14 Write property test for totalAreaKm2 derivation (Property 36)
     - **Property 36: totalAreaKm2 derivation correctness**
     - For any segment list, `totalAreaKm2 = sum(area_m2) / 1,000,000`
     - **Validates: Requirements 22.3**
 
-  - [ ]* 21.14 Write property test for tree segmentation cache hit (Property 37)
-    - **Property 37: Tree segmentation cache hit avoids Earth Engine**
-    - For any LGA with cached `tree_segments` rows, `getTreeSegmentation` returns cached data without invoking EarthEngineService
+  - [ ]* 21.15 Write property test for tree segmentation cache hit (Property 37)
+    - **Property 37: Tree segmentation cache hit avoids EE and Python sidecar**
+    - For any LGA with cached `tree_segments` rows, `getTreeSegmentation` returns cached data without spawning Python or calling EE
     - **Validates: Requirements 22.4**
 
-  - [ ]* 21.15 Write property test for buildSystemPrompt with segmentation context (Property 39)
+  - [ ]* 21.16 Write property test for buildSystemPrompt with segmentation context (Property 39)
     - **Property 39: buildSystemPrompt includes segmentation context when provided**
     - For any valid `HeatStats`, non-empty `lgaName`, and finite segmentation values, prompt is non-empty, deterministic, and contains `treeCount`, `coveragePct`, `totalAreaKm2`
     - **Validates: Requirements 22.6**
