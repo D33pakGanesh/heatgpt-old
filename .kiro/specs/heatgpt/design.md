@@ -9,7 +9,7 @@ and engage with an AI chat interface — HeatGPT — that explains the heat patt
 
 The system follows a SatGPT/FloodGPT-style UX: a full-screen map with a slide-in panel for data
 and chat. Processing is driven by Google Earth Engine for satellite-derived metrics, stored in
-PostGIS, served via a Node.js/Express REST API, and scheduled by n8n automation workflows.
+PostGIS, and served via a Node.js/Express REST API.
 
 The application is hosted on an Ubuntu VM on Google Cloud Platform and built incrementally:
 map + LGA boundaries first, then Earth Engine integration, then the chat interface.
@@ -27,7 +27,6 @@ graph TD
     API["Backend API (Node.js / Express)"]
     DB["PostgreSQL + PostGIS"]
     EE["Google Earth Engine API"]
-    N8N["n8n Automation Workflows"]
     GCS["Google Cloud Storage (optional cache)"]
     LLM["LLM API (OpenAI / Gemini)"]
 
@@ -36,8 +35,6 @@ graph TD
     API -->|"SQL queries"| DB
     API -->|"EE script execution"| EE
     API -->|"LLM prompt"| LLM
-    N8N -->|"Scheduled EE processing"| EE
-    N8N -->|"Write aggregated stats"| DB
     EE -->|"Satellite imagery"| GCS
 ```
 
@@ -49,7 +46,6 @@ graph LR
         FE["React Frontend (Nginx)"]
         BE["Express API (Node.js, port 3001)"]
         PG["PostgreSQL + PostGIS (port 5432)"]
-        N8N_SVC["n8n Service (port 5678)"]
     end
 
     Browser["User Browser"] -->|HTTPS| FE
@@ -57,8 +53,6 @@ graph LR
     BE --> PG
     BE -->|"HTTPS"| EE_API["Earth Engine API (external)"]
     BE -->|"HTTPS"| LLM_API["LLM API (external)"]
-    N8N_SVC --> EE_API
-    N8N_SVC --> PG
 ```
 
 
@@ -116,23 +110,8 @@ sequenceDiagram
     FE->>FE: Append message to chat panel
 ```
 
-### n8n Scheduled Processing Flow
 
-```mermaid
-sequenceDiagram
-    participant N8N as n8n Scheduler
-    participant EE as Earth Engine
-    participant DB as PostGIS
-
-    N8N->>N8N: Cron trigger (weekly)
-    N8N->>DB: SELECT lga_id, bbox FROM lgas
-    loop For each LGA batch
-        N8N->>EE: Execute LST + NDVI script (batch)
-        EE-->>N8N: Aggregated metrics per LGA
-        N8N->>DB: UPSERT heat_stats (lga_id, lst, ndvi, uhi, processed_at)
-    end
-    N8N->>N8N: Log completion
-```
+---
 
 
 ---
@@ -715,17 +694,6 @@ export async function initEarthEngine(): Promise<void> {
 }
 ```
 
-### n8n Workflow: Weekly Processing (HTTP Request Node Config)
-
-```json
-{
-  "method": "POST",
-  "url": "http://localhost:3001/api/internal/process-all-lgas",
-  "headers": { "x-internal-key": "{{ $env.INTERNAL_API_KEY }}" },
-  "schedule": "0 2 * * 1"
-}
-```
-
 
 ---
 
@@ -1090,7 +1058,6 @@ fc.assert(fc.property(
 - Spin up a test PostgreSQL instance with PostGIS and seed with sample LGA data
 - Test full request/response cycle for `/api/lgas` and `/api/lga/:id/heat` against the test DB
 - Mock Earth Engine and LLM API calls at the HTTP boundary using `nock`
-- Verify n8n workflow triggers the internal processing endpoint and updates `heat_stats`
 
 ---
 
@@ -1098,7 +1065,6 @@ fc.assert(fc.property(
 
 - LGA GeoJSON for all ~550 Australian LGAs can be large (~5–15 MB uncompressed). Serve with gzip compression and consider simplifying geometry precision to 4 decimal places for the map layer.
 - Earth Engine computations are slow (5–30 seconds). On-demand computation should only occur for LGAs with no cached data. All other requests are served from PostGIS in < 100ms.
-- The n8n weekly batch job processes LGAs in batches of 20 to avoid Earth Engine quota limits.
 - PostGIS spatial index on `lgas.geom` ensures fast bounding-box and point-in-polygon queries.
 - Frontend uses React Query (or SWR) to cache API responses client-side and avoid redundant requests during a session.
 
@@ -1108,7 +1074,6 @@ fc.assert(fc.property(
 
 - Earth Engine service account key is stored as an environment variable / GCP Secret Manager secret, never committed to source control.
 - LLM API key is stored server-side only; never exposed to the frontend.
-- The internal n8n processing endpoint (`/api/internal/process-all-lgas`) is protected by a shared secret header (`x-internal-key`).
 - All API inputs are validated and sanitised before use in SQL queries (parameterised queries via `pg` library).
 - CORS is configured to allow only the frontend origin in production.
 - Rate limiting (e.g. `express-rate-limit`) is applied to `/api/chat` to prevent LLM cost abuse.
@@ -1134,7 +1099,6 @@ fc.assert(fc.property(
 
 ### Infrastructure
 - PostgreSQL 15+ with PostGIS 3.x
-- n8n (self-hosted, Docker or systemd)
 - Nginx (reverse proxy + static file serving)
 - Node.js 20 LTS
 - `shp2pgsql` / `ogr2ogr` — PostGIS Shapefile import tooling (bundled with PostGIS)

@@ -6,7 +6,7 @@ Incremental build following the design's three-phase approach:
 1. Manual data prep — load ABS LGA Shapefile into PostGIS via pgShapeLoader + pgAdmin4 (operator step, no code)
 2. Map + LGA boundaries (`/api/lgas`, MapView)
 3. Earth Engine integration (heat stats API, HeatService, EarthEngineService, SidePanel)
-4. Chat interface (ChatService, `/api/chat`, ChatInterface, n8n scheduler)
+4. Chat interface (ChatService, `/api/chat`, ChatInterface)
 
 Stack: TypeScript (Node.js/Express backend, React frontend), PostgreSQL + PostGIS, Google Earth Engine, fast-check for property tests.
 
@@ -227,29 +227,6 @@ Stack: TypeScript (Node.js/Express backend, React frontend), PostgreSQL + PostGI
   - Ensure all SQL uses parameterised queries (audit `pg` calls)
   - Confirm EE key and LLM key are read from env vars only, never logged or returned in responses
   - _Requirements: 13.1, 13.2, 13.3, 13.4, 13.6_
-
-- [ ] 11. n8n scheduler and internal processing endpoint
-  - [ ] 11.1 Implement `POST /api/internal/process-all-lgas` route
-    - Validate `x-internal-key` header against env var; return HTTP 401 if absent or invalid
-    - Fetch all LGA IDs and bboxes from PostGIS
-    - Process in batches of 20: call `EarthEngineService` per LGA, upsert `heat_stats`
-    - Log completion record
-    - _Requirements: 11.1, 11.2, 11.3, 11.4, 11.5_
-
-  - [ ]* 11.2 Write property test for batch size limit (Property 16)
-    - **Property 16: Scheduler batch size never exceeds 20**
-    - For any list of LGAs of arbitrary length, batches contain at most 20 LGAs before invoking `EarthEngineService`
-    - **Validates: Requirements 11.2**
-
-  - [ ]* 11.3 Write property test for internal endpoint auth (Property 17)
-    - **Property 17: Internal endpoint rejects unauthorised requests**
-    - For any request to `/api/internal/process-all-lgas` without a valid `x-internal-key`, response is HTTP 401
-    - **Validates: Requirements 11.5**
-
-  - [ ] 11.4 Configure n8n workflow
-    - Create n8n HTTP Request node targeting `POST /api/internal/process-all-lgas` with `x-internal-key` header
-    - Set cron schedule to `0 2 * * 1` (Mondays at 02:00)
-    - _Requirements: 11.1_
 
 - [x] 12. Wire everything together in App.tsx
   - [x] 12.1 Implement `App.tsx` with `MapView` and `SidePanel` composed together

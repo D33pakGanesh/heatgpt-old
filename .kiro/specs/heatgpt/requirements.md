@@ -7,8 +7,7 @@ across Australian Local Government Areas (LGAs). Users interact with a full-scre
 click on any LGA to retrieve satellite-derived heat analysis statistics (land surface temperature,
 NDVI, UHI intensity), and engage with an AI chat interface — HeatGPT — that explains heat patterns
 in plain language. The system is hosted on a GCP Ubuntu VM and uses Google Earth Engine for
-satellite processing, PostGIS for spatial data storage, a Node.js/Express REST API, and n8n for
-scheduled batch processing.
+satellite processing, PostGIS for spatial data storage, and a Node.js/Express REST API.
 
 ---
 
@@ -28,7 +27,6 @@ scheduled batch processing.
 - **HeatService**: The backend service responsible for retrieving or computing heat statistics for an LGA.
 - **EarthEngineService**: The backend service that executes Google Earth Engine scripts and returns computed metrics.
 - **ChatService**: The backend service that builds LLM prompts and calls the LLM API.
-- **Scheduler**: The n8n automation service that runs weekly batch processing of heat statistics.
 - **PostGIS**: The PostgreSQL database with spatial extensions used to store LGA boundaries and heat statistics.
 - **BBox**: A bounding box defined by `{west, south, east, north}` coordinates in EPSG:4326.
 - **Stale**: A `heat_stats` record is considered stale when its `processed_at` timestamp is more than 7 days in the past.
