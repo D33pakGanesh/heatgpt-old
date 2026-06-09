@@ -7,6 +7,16 @@ import { BBox, DateRange } from '../types'
 // Shared auth client for REST API calls
 let _projectId: string | null = null
 
+// EE JS client readiness gate — all functions that use ee.* must await this
+let _eeReady = false
+let _eeReadyResolve: (() => void) | null = null
+const _eeReadyPromise = new Promise<void>(resolve => { _eeReadyResolve = resolve })
+
+export function waitForEE(): Promise<void> {
+  if (_eeReady) return Promise.resolve()
+  return _eeReadyPromise
+}
+
 export async function getAccessToken(): Promise<{ token: string; projectId: string }> {
   const keyPath = process.env.EE_KEY_FILE!
   const key = JSON.parse(fs.readFileSync(keyPath, 'utf8'))
@@ -32,7 +42,7 @@ export async function initEarthEngine(): Promise<void> {
       () => {
         ee.initialize(
           null, null,
-          () => { console.log('Earth Engine ready'); resolve() },
+          () => { console.log('Earth Engine ready'); _eeReady = true; if (_eeReadyResolve) _eeReadyResolve(); resolve() },
           (err: Error) => reject(err)
         )
       },
@@ -289,6 +299,187 @@ export async function getMapTileUrl(
   }
 
   console.log('EE Thumbnails response:', JSON.stringify(response.data).substring(0, 200))
+  return response.data.name
+    ? `https://earthengine.googleapis.com/v1/${response.data.name}:getPixels`
+    : response.data.downloadUrl || response.data.url
+}
+
+
+
+// ─── SUHI (Surface Urban Heat Island) via MODIS LST — EE JS client ───────────
+// Uses waitForEE() to ensure the JS client is ready before any ee.* call.
+// MODIS MOD11A2: 8-day composite, LST_Day_1km + LST_Night_1km, scale factor 0.02 K
+
+type SuhiMode = 'annual_day' | 'annual_night' | 'summer_day' | 'summer_night' | 'winter_day' | 'winter_night'
+
+function getBand(mode: SuhiMode): string {
+  return mode.includes('night') ? 'LST_Night_1km' : 'LST_Day_1km'
+}
+
+function getMonthFilter(mode: SuhiMode): any | null {
+  if (mode.includes('summer')) {
+    // Southern Hemisphere summer: Dec, Jan, Feb
+    return ee.Filter.or(
+      ee.Filter.calendarRange(12, 12, 'month'),
+      ee.Filter.calendarRange(1,  2,  'month')
+    )
+  }
+  if (mode.includes('winter')) {
+    // Southern Hemisphere winter: Jun, Jul, Aug
+    return ee.Filter.calendarRange(6, 8, 'month')
+  }
+  return null
+}
+
+function modisToC(img: any, band: string): any {
+  return img.select(band).multiply(0.02).subtract(273.15)
+}
+
+export async function computeSUHI(
+  bbox: BBox,
+  year: number,
+  mode: SuhiMode
+): Promise<{ lgaLst: number; regionalLst: number; suhi: number }> {
+  await waitForEE()
+
+  const band        = getBand(mode)
+  const monthFilter = getMonthFilter(mode)
+  const start       = `${year}-01-01`
+  const end         = `${year}-12-31`
+
+  const lgaRegion = ee.Geometry.Rectangle([bbox.west, bbox.south, bbox.east, bbox.north])
+  const refRegion = ee.Geometry.Rectangle([bbox.west - 1, bbox.south - 1, bbox.east + 1, bbox.north + 1])
+
+  let col = ee.ImageCollection('MODIS/061/MOD11A2').filterDate(start, end).select(band)
+  if (monthFilter) col = col.filter(monthFilter)
+
+  const size = await getInfo<number>(col.size())
+  if (size === 0) throw new Error(`No MODIS imagery for ${year} mode=${mode}`)
+
+  const meanImg = col.map((img: any) => modisToC(img, band)).mean()
+
+  const [lgaResult, refResult] = await Promise.all([
+    getInfo<Record<string, number>>(meanImg.reduceRegion({ reducer: ee.Reducer.mean(), geometry: lgaRegion, scale: 1000, maxPixels: 1e9, bestEffort: true })),
+    getInfo<Record<string, number>>(meanImg.reduceRegion({ reducer: ee.Reducer.mean(), geometry: refRegion, scale: 1000, maxPixels: 1e9, bestEffort: true })),
+  ])
+
+  const lgaLst = lgaResult[band]
+  const refLst = refResult[band]
+  if (lgaLst == null || refLst == null) throw new Error('MODIS LST reduction returned null')
+
+  return {
+    lgaLst:      parseFloat(lgaLst.toFixed(3)),
+    regionalLst: parseFloat(refLst.toFixed(3)),
+    suhi:        parseFloat((lgaLst - refLst).toFixed(3)),
+  }
+}
+
+export async function computeSUHIMonthly(
+  bbox: BBox,
+  year: number
+): Promise<Array<{ month: number; day: number | null; night: number | null }>> {
+  await waitForEE()
+
+  const lgaRegion = ee.Geometry.Rectangle([bbox.west, bbox.south, bbox.east, bbox.north])
+  const refRegion = ee.Geometry.Rectangle([bbox.west - 1, bbox.south - 1, bbox.east + 1, bbox.north + 1])
+
+  const col = ee.ImageCollection('MODIS/061/MOD11A2')
+    .filterDate(`${year}-01-01`, `${year}-12-31`)
+    .select(['LST_Day_1km', 'LST_Night_1km'])
+
+  const totalSize = await getInfo<number>(col.size())
+  if (totalSize === 0) throw new Error(`No MODIS imagery for ${year}`)
+
+  const results: Array<{ month: number; day: number | null; night: number | null }> = []
+
+  for (let m = 1; m <= 12; m++) {
+    const monthly = col.filter(ee.Filter.calendarRange(m, m, 'month'))
+    const mSize   = await getInfo<number>(monthly.size())
+
+    if (mSize === 0) {
+      results.push({ month: m, day: null, night: null })
+      continue
+    }
+
+    const dayImg   = monthly.select('LST_Day_1km').map((img: any) => modisToC(img, 'LST_Day_1km')).mean()
+    const nightImg = monthly.select('LST_Night_1km').map((img: any) => modisToC(img, 'LST_Night_1km')).mean()
+
+    const [lgaDay, refDay, lgaNight, refNight] = await Promise.all([
+      getInfo<Record<string, number>>(dayImg.reduceRegion({ reducer: ee.Reducer.mean(), geometry: lgaRegion, scale: 1000, maxPixels: 1e9, bestEffort: true })),
+      getInfo<Record<string, number>>(dayImg.reduceRegion({ reducer: ee.Reducer.mean(), geometry: refRegion, scale: 1000, maxPixels: 1e9, bestEffort: true })),
+      getInfo<Record<string, number>>(nightImg.reduceRegion({ reducer: ee.Reducer.mean(), geometry: lgaRegion, scale: 1000, maxPixels: 1e9, bestEffort: true })),
+      getInfo<Record<string, number>>(nightImg.reduceRegion({ reducer: ee.Reducer.mean(), geometry: refRegion, scale: 1000, maxPixels: 1e9, bestEffort: true })),
+    ])
+
+    const daySuhi   = lgaDay['LST_Day_1km']     != null && refDay['LST_Day_1km']     != null
+      ? parseFloat((lgaDay['LST_Day_1km']     - refDay['LST_Day_1km']).toFixed(3))     : null
+    const nightSuhi = lgaNight['LST_Night_1km'] != null && refNight['LST_Night_1km'] != null
+      ? parseFloat((lgaNight['LST_Night_1km'] - refNight['LST_Night_1km']).toFixed(3)) : null
+
+    results.push({ month: m, day: daySuhi, night: nightSuhi })
+  }
+
+  return results
+}
+
+export async function getSUHITileUrl(
+  bbox: BBox,
+  year: number,
+  mode: SuhiMode
+): Promise<string> {
+  await waitForEE()
+
+  const band        = getBand(mode)
+  const monthFilter = getMonthFilter(mode)
+  const start       = `${year}-01-01`
+  const end         = `${year}-12-31`
+
+  const lgaRegion = ee.Geometry.Rectangle([bbox.west, bbox.south, bbox.east, bbox.north])
+  const refRegion = ee.Geometry.Rectangle([bbox.west - 1, bbox.south - 1, bbox.east + 1, bbox.north + 1])
+
+  let col = ee.ImageCollection('MODIS/061/MOD11A2').filterDate(start, end).select(band)
+  if (monthFilter) col = col.filter(monthFilter)
+
+  const size = await getInfo<number>(col.size())
+  if (size === 0) throw new Error(`No MODIS imagery for ${year} mode=${mode}`)
+
+  const meanImg = col.map((img: any) => modisToC(img, band)).mean()
+
+  // Get reference scalar to subtract
+  const refResult = await getInfo<Record<string, number>>(
+    meanImg.reduceRegion({ reducer: ee.Reducer.mean(), geometry: refRegion, scale: 1000, maxPixels: 1e9, bestEffort: true })
+  )
+  const refLst = refResult[band] ?? 0
+
+  const suhiImg = meanImg.subtract(refLst).clip(lgaRegion)
+
+  const visParams = {
+    min: -3, max: 3,
+    palette: ['313695', '4575b4', '74add1', 'ffffbf', 'fdae61', 'f46d43', 'a50026'],
+  }
+
+  const eeExpression = suhiImg.visualize(visParams).serialize()
+  const { token, projectId } = await getAccessToken()
+
+  const response = await axios.post(
+    `https://earthengine.googleapis.com/v1/projects/${projectId}/thumbnails`,
+    {
+      expression: JSON.parse(eeExpression),
+      fileFormat: 'PNG',
+      grid: {
+        dimensions: { width: 512, height: 512 },
+        affineTransform: {
+          scaleX: (bbox.east  - bbox.west)  / 512,
+          scaleY: -(bbox.north - bbox.south) / 512,
+          translateX: bbox.west,
+          translateY: bbox.north,
+        },
+        crsCode: 'EPSG:4326',
+      },
+    },
+    { headers: { Authorization: `Bearer ${token}` } }
+  )
+
   return response.data.name
     ? `https://earthengine.googleapis.com/v1/${response.data.name}:getPixels`
     : response.data.downloadUrl || response.data.url

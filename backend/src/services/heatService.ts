@@ -37,6 +37,8 @@ function mapRowToHeatStats(row: Record<string, unknown>): HeatStats {
 
 export async function computeAndStore(lgaId: string, bbox: BBox): Promise<HeatStats> {
   const dateRange = defaultDateRange()
+  const t0 = Date.now()
+  console.log(`  [GEE] Computing LST + NDVI for ${lgaId} (${dateRange.start} → ${dateRange.end})`)
 
   const [lgaLST, regionalMeanLST, ndvi] = await Promise.all([
     computeLST(bbox, dateRange),
@@ -51,6 +53,7 @@ export async function computeAndStore(lgaId: string, bbox: BBox): Promise<HeatSt
     [lgaId]
   )
   const lgaName: string = lgaResult.rows[0]?.lga_name ?? lgaId
+  console.log(`  [GEE] Done for ${lgaName} — LST=${lgaLST.toFixed(2)}°C NDVI=${ndvi.toFixed(3)} UHI=${uhi.toFixed(2)}°C (${Date.now()-t0}ms)`)
 
   await pool.query(
     `INSERT INTO heat_stats
@@ -85,12 +88,38 @@ export async function getHeatStatsForRange(
   lgaId: string,
   dateRange: DateRange
 ): Promise<HeatStats> {
+  // Check DB cache first — serve instantly if fresh
+  const cacheResult = await pool.query(
+    `SELECT hs.*, l.lga_name FROM heat_stats hs
+     JOIN lgas l ON l.lga_id = hs.lga_id WHERE hs.lga_id = $1`,
+    [lgaId]
+  )
+  const cached = cacheResult.rows[0] ?? null
+
+  if (cached && !isStale(new Date(cached.processed_at))) {
+    console.log(`  [Heat] Cache hit for ${lgaId} (${cached.lga_name}) — served from DB`)
+    return mapRowToHeatStats(cached)
+  }
+
   const lga = await getLgaById(lgaId)
   if (!lga) {
     const err = new Error(`LGA not found: ${lgaId}`) as any
     err.status = 404
     throw err
   }
+
+  // Stale cache — return immediately, refresh in background
+  if (cached) {
+    console.log(`  [Heat] Stale cache for ${lga.lgaName} — returning cached, refreshing in background`)
+    computeAndStore(lgaId, lga.bbox).catch(e =>
+      console.error(`  [Heat] Background refresh failed for ${lgaId}:`, e.message)
+    )
+    return mapRowToHeatStats(cached)
+  }
+
+  // No cache — compute from GEE
+  console.log(`  [Heat] No cache for ${lga.lgaName} — computing from GEE (${dateRange.start} → ${dateRange.end})`)
+  const t0 = Date.now()
 
   const [lgaLST, regionalMeanLST, ndvi] = await Promise.all([
     computeLST(lga.bbox, dateRange),
@@ -99,16 +128,23 @@ export async function getHeatStatsForRange(
   ])
 
   const uhi = computeUHI(lgaLST, regionalMeanLST)
+  console.log(`  [Heat] Done for ${lga.lgaName} — LST=${lgaLST.toFixed(2)}°C NDVI=${ndvi.toFixed(3)} UHI=${uhi.toFixed(2)}°C (${Date.now()-t0}ms)`)
 
-  const lgaResult = await pool.query(
-    `SELECT lga_name FROM lgas WHERE lga_id = $1`,
-    [lgaId]
+  // Persist to cache
+  await pool.query(
+    `INSERT INTO heat_stats (lga_id, avg_lst_celsius, avg_ndvi, uhi_intensity, data_source, date_range_start, date_range_end, processed_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
+     ON CONFLICT (lga_id) DO UPDATE SET
+       avg_lst_celsius=EXCLUDED.avg_lst_celsius, avg_ndvi=EXCLUDED.avg_ndvi,
+       uhi_intensity=EXCLUDED.uhi_intensity, data_source=EXCLUDED.data_source,
+       date_range_start=EXCLUDED.date_range_start, date_range_end=EXCLUDED.date_range_end,
+       processed_at=NOW()`,
+    [lgaId, lgaLST, ndvi, uhi, 'landsat9', dateRange.start, dateRange.end]
   )
-  const lgaName: string = lgaResult.rows[0]?.lga_name ?? lgaId
 
   return {
     lgaId,
-    lgaName,
+    lgaName: lga.lgaName,
     avgLstCelsius: lgaLST,
     avgNdvi: ndvi,
     uhiIntensity: uhi,
@@ -134,6 +170,7 @@ export async function getHeatStats(
   const cached = cacheResult.rows[0] ?? null
 
   if (cached && !isStale(new Date(cached.processed_at))) {
+    console.log(`  [Heat] Cache hit for ${lgaId} (${cached.lga_name}) — served from DB`)
     return mapRowToHeatStats(cached)
   }
 
@@ -145,11 +182,12 @@ export async function getHeatStats(
     throw err
   }
 
+  console.log(`  [Heat] No fresh cache for ${lgaId} — computing from GEE`)
   try {
     const fresh = await computeAndStore(lgaId, lga.bbox)
     return fresh
   } catch (eeErr) {
-  console.error("Earth Engine computation error:", eeErr)
+    console.error(`  [Heat] GEE error for ${lgaId}:`, (eeErr as any).message)
     // EE unavailable — return stale cache if available
     if (cached) {
       return { ...mapRowToHeatStats(cached), stale: true }

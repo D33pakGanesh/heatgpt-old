@@ -15,6 +15,7 @@ const tileUrlCache = new Map<string, { url: string; expires: number }>()
 router.get('/lgas', async (req: Request, res: Response) => {
   try {
     const featureCollection = await getAllLgas()
+    console.log(`  [LGAs] Returned ${featureCollection.features?.length ?? 0} boundaries`)
     res.status(200).json(featureCollection)
   } catch (err) {
     console.error('GET /lgas error:', err)
@@ -35,6 +36,7 @@ router.get('/lga/:id/tiles', async (req: Request, res: Response) => {
       end: end ?? new Date().toISOString().slice(0, 10),
     }
 
+    console.log(`  [Tiles] Requesting ${type.toUpperCase()} tile for LGA ${req.params.id} (${dateRange.start} → ${dateRange.end})`)
     // Use DB-first caching pattern via geeLayerService
     const geeLayer = await getGeeLayer(req.params.id, type as 'lst' | 'ndvi', dateRange)
 
@@ -193,3 +195,179 @@ router.delete('/lga/:id/saved-layers/:layerId', async (req: Request, res: Respon
 })
 
 export default router
+
+// ─── SUHI routes ─────────────────────────────────────────────────────────────
+import { computeSUHI, computeSUHIMonthly, getSUHITileUrl } from '../services/earthEngineService'
+
+const VALID_SUHI_MODES = ['annual_day','annual_night','summer_day','summer_night','winter_day','winter_night'] as const
+type SuhiMode = typeof VALID_SUHI_MODES[number]
+
+// Tile URL in-memory cache (EE URLs expire ~1h, keep 55 min)
+const suhiTileCache = new Map<string, { url: string; ts: number }>()
+const SUHI_TILE_TTL = 55 * 60 * 1000
+
+router.get('/lga/:id/suhi', async (req: Request, res: Response) => {
+  const { mode, year } = req.query as { mode?: string; year?: string }
+
+  if (!mode || !VALID_SUHI_MODES.includes(mode as SuhiMode)) {
+    return res.status(400).json({ error: `mode must be one of: ${VALID_SUHI_MODES.join(', ')}` })
+  }
+  const yr = year ? parseInt(year) : new Date().getFullYear() - 1
+  if (isNaN(yr) || yr < 2000 || yr > new Date().getFullYear()) {
+    return res.status(400).json({ error: 'Invalid year' })
+  }
+
+  // Check PostGIS cache first
+  try {
+    const dbCached = await pool.query(
+      `SELECT lga_lst, regional_lst, suhi FROM suhi_stats_cache WHERE lga_id=$1 AND mode=$2 AND year=$3`,
+      [req.params.id, mode, yr]
+    )
+    if (dbCached.rows.length > 0) {
+      const r = dbCached.rows[0]
+      const lga = await getLgaById(req.params.id)
+      console.log(`  [SUHI] Cache hit for ${req.params.id} mode=${mode} year=${yr}`)
+      return res.status(200).json({
+        lgaId: req.params.id, lgaName: lga?.lgaName ?? req.params.id,
+        mode, year: yr,
+        lgaLst: parseFloat(r.lga_lst), regionalLst: parseFloat(r.regional_lst), suhi: parseFloat(r.suhi),
+      })
+    }
+  } catch (_) {}
+
+  try {
+    const lga = await getLgaById(req.params.id)
+    if (!lga) return res.status(404).json({ error: 'LGA not found' })
+
+    console.log(`  [SUHI] Computing from GEE for ${lga.lgaName} mode=${mode} year=${yr}...`)
+    const result = await computeSUHI(lga.bbox, yr, mode as SuhiMode)
+    console.log(`  [SUHI] Done — SUHI=${result.suhi.toFixed(2)}°C (LGA=${result.lgaLst.toFixed(1)}°C ref=${result.regionalLst.toFixed(1)}°C)`)
+    // Persist to DB
+    await pool.query(
+      `INSERT INTO suhi_stats_cache (lga_id, mode, year, lga_lst, regional_lst, suhi, computed_at)
+       VALUES ($1,$2,$3,$4,$5,$6,NOW())
+       ON CONFLICT (lga_id, mode, year) DO UPDATE SET
+         lga_lst=EXCLUDED.lga_lst, regional_lst=EXCLUDED.regional_lst,
+         suhi=EXCLUDED.suhi, computed_at=NOW()`,
+      [req.params.id, mode, yr, result.lgaLst, result.regionalLst, result.suhi]
+    )
+    const data = { lgaId: req.params.id, lgaName: lga.lgaName, mode, year: yr, ...result }
+    return res.status(200).json(data)
+  } catch (err: any) {
+    console.error('GET /lga/:id/suhi error:', err.message)
+    if (err.message?.includes('No MODIS')) return res.status(422).json({ error: err.message })
+    return res.status(503).json({ error: 'Earth Engine unavailable' })
+  }
+})
+
+router.get('/lga/:id/suhi-tiles', async (req: Request, res: Response) => {
+  const { mode, year } = req.query as { mode?: string; year?: string }
+
+  if (!mode || !VALID_SUHI_MODES.includes(mode as SuhiMode)) {
+    return res.status(400).json({ error: `mode must be one of: ${VALID_SUHI_MODES.join(', ')}` })
+  }
+  const yr = year ? parseInt(year) : new Date().getFullYear() - 1
+  if (isNaN(yr) || yr < 2000 || yr > new Date().getFullYear()) {
+    return res.status(400).json({ error: 'Invalid year' })
+  }
+
+  const cacheKey = `${req.params.id}-${mode}-${yr}`
+  const cached = suhiTileCache.get(cacheKey)
+  if (cached && Date.now() - cached.ts < SUHI_TILE_TTL) {
+    const tileUrl = `/api/lga/${req.params.id}/suhi-tile-image?mode=${mode}&year=${yr}`
+    return res.status(200).json({ tileUrl, eeUrl: cached.url })
+  }
+
+  try {
+    const lga = await getLgaById(req.params.id)
+    if (!lga) return res.status(404).json({ error: 'LGA not found' })
+
+    const eeUrl = await getSUHITileUrl(lga.bbox, yr, mode as SuhiMode)
+    suhiTileCache.set(cacheKey, { url: eeUrl, ts: Date.now() })
+    const tileUrl = `/api/lga/${req.params.id}/suhi-tile-image?mode=${mode}&year=${yr}`
+    return res.status(200).json({ tileUrl, eeUrl, bbox: lga.bbox })
+  } catch (err: any) {
+    console.error('GET /lga/:id/suhi-tiles error:', err.message)
+    if (err.message?.includes('No MODIS')) return res.status(422).json({ error: err.message })
+    return res.status(503).json({ error: 'Earth Engine unavailable' })
+  }
+})
+
+// Proxy SUHI tile image (same pattern as existing tile-image endpoint)
+router.get('/lga/:id/suhi-tile-image', async (req: Request, res: Response) => {
+  const { mode, year } = req.query as { mode?: string; year?: string }
+  if (!mode || !year) return res.status(400).send('Missing params')
+
+  const cacheKey = `${req.params.id}-${mode}-${year}`
+  const cached = suhiTileCache.get(cacheKey)
+  if (!cached || Date.now() - cached.ts >= SUHI_TILE_TTL) {
+    return res.status(404).send('Tile not ready — request /suhi-tiles first')
+  }
+
+  try {
+    const { token } = await getAccessToken()
+    const imageRes = await axios.get(cached.url, {
+      headers: { Authorization: `Bearer ${token}` },
+      responseType: 'arraybuffer',
+    })
+    res.set('Content-Type', 'image/png')
+    res.set('Cache-Control', 'public, max-age=86400')
+    res.send(imageRes.data)
+  } catch (err: any) {
+    console.error('SUHI tile proxy error:', err.message)
+    res.status(502).send('Failed to fetch SUHI tile from Earth Engine')
+  }
+})
+
+router.get('/lga/:id/suhi-monthly', async (req: Request, res: Response) => {
+  const { year } = req.query as { year?: string }
+  const yr = year ? parseInt(year) : new Date().getFullYear() - 1
+  if (isNaN(yr) || yr < 2000 || yr > new Date().getFullYear()) {
+    return res.status(400).json({ error: 'Invalid year' })
+  }
+
+  // Check PostGIS cache — if all 12 months present, return immediately
+  try {
+    const dbCached = await pool.query(
+      `SELECT month, day_suhi, night_suhi FROM suhi_monthly_cache
+       WHERE lga_id=$1 AND year=$2 ORDER BY month`,
+      [req.params.id, yr]
+    )
+    if (dbCached.rows.length === 12) {
+      console.log(`  [SUHI-Monthly] Cache hit for ${req.params.id} year=${yr}`)
+      const monthly = dbCached.rows.map((r: any) => ({
+        month: r.month,
+        day:   r.day_suhi   != null ? parseFloat(r.day_suhi)   : null,
+        night: r.night_suhi != null ? parseFloat(r.night_suhi) : null,
+      }))
+      return res.status(200).json({ lgaId: req.params.id, year: yr, monthly })
+    }
+  } catch (_) {}
+
+  try {
+    const lga = await getLgaById(req.params.id)
+    if (!lga) return res.status(404).json({ error: 'LGA not found' })
+
+    console.log(`  [SUHI-Monthly] Computing 12 months from GEE for ${lga.lgaName} year=${yr}...`)
+    const monthly = await computeSUHIMonthly(lga.bbox, yr)
+    console.log(`  [SUHI-Monthly] Done — ${monthly.filter(m => m.day !== null).length}/12 months with data`)
+
+    // Persist each month to DB
+    for (const m of monthly) {
+      await pool.query(
+        `INSERT INTO suhi_monthly_cache (lga_id, year, month, day_suhi, night_suhi, computed_at)
+         VALUES ($1,$2,$3,$4,$5,NOW())
+         ON CONFLICT (lga_id, year, month) DO UPDATE SET
+           day_suhi=EXCLUDED.day_suhi, night_suhi=EXCLUDED.night_suhi, computed_at=NOW()`,
+        [req.params.id, yr, m.month, m.day, m.night]
+      )
+    }
+
+    const data = { lgaId: req.params.id, year: yr, monthly }
+    return res.status(200).json(data)
+  } catch (err: any) {
+    console.error('GET /lga/:id/suhi-monthly error:', err.message)
+    if (err.message?.includes('No MODIS')) return res.status(422).json({ error: err.message })
+    return res.status(503).json({ error: 'Earth Engine unavailable' })
+  }
+})

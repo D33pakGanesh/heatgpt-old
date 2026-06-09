@@ -1,4 +1,4 @@
-import express from "express"
+import express, { Request, Response, NextFunction } from "express"
 import cors from "cors"
 import compression from "compression"
 import dotenv from "dotenv"
@@ -10,6 +10,22 @@ import { initEarthEngine } from "./services/earthEngineService"
 dotenv.config()
 
 const app = express()
+
+// ── Request logger ────────────────────────────────────────────────────────────
+app.use((req: Request, res: Response, next: NextFunction) => {
+  const start = Date.now()
+  const { method, url } = req
+
+  // Log on response finish so we capture status + duration
+  res.on('finish', () => {
+    const ms = Date.now() - start
+    const status = res.statusCode
+    const color = status >= 500 ? '✗' : status >= 400 ? '!' : status >= 300 ? '→' : '✓'
+    console.log(`${color} ${method} ${url} ${status} — ${ms}ms`)
+  })
+
+  next()
+})
 
 app.use(compression())
 app.use(cors({ origin: process.env.FRONTEND_ORIGIN || "*" }))

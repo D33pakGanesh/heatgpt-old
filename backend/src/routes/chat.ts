@@ -43,6 +43,7 @@ router.post('/chat', chatLimiter, async (req: Request, res: Response) => {
 
   const { heatStats, question, history } = parsed.data
 
+  console.log(`  [Chat] "${question.slice(0, 60)}${question.length > 60 ? '…' : ''}" — LGA: ${heatStats.lgaName}`)
   const systemPrompt = buildSystemPrompt(heatStats, heatStats.lgaName)
 
   const messages: ChatMessage[] = [
@@ -51,7 +52,9 @@ router.post('/chat', chatLimiter, async (req: Request, res: Response) => {
   ]
 
   try {
+    const t0 = Date.now()
     const answer = await sendMessage(messages, systemPrompt)
+    console.log(`  [Chat] Gemini responded in ${Date.now()-t0}ms (${answer.length} chars)`)
     return res.status(200).json({ answer })
   } catch (err) {
     console.error('POST /chat LLM error:', err)

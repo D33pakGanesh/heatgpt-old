@@ -2,25 +2,27 @@
 import { useEffect, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import L from 'leaflet'
-import type { SymbologySettings } from './SymbologyPanel'
+import type { SymbologySettings, BasemapType } from './SymbologyPanel'
 
 interface MapViewProps {
   onLgaSelect: (lgaId: string) => void
   activeTileLayer?: {
     url: string
-    type: 'lst' | 'ndvi'
+    type: 'lst' | 'ndvi' | 'suhi'
     bbox?: { west: number; south: number; east: number; north: number }
     lgaGeometry?: GeoJSON.Geometry | null
   } | null
   symbology?: SymbologySettings
+  basemap?: BasemapType
   mapRefCallback?: (map: L.Map) => void
 }
 
-export default function MapView({ onLgaSelect, activeTileLayer, symbology, mapRefCallback }: MapViewProps) {
+export default function MapView({ onLgaSelect, activeTileLayer, symbology, basemap = 'map', mapRefCallback }: MapViewProps) {
   const mapRef = useRef<L.Map | null>(null)
   const mapInitialised = useRef(false)
   const geeLayerRef = useRef<any>(null)
   const lgaLayerRef = useRef<L.GeoJSON | null>(null)
+  const basemapLayerRef = useRef<L.TileLayer | null>(null)
 
   const { data, isError } = useQuery<GeoJSON.FeatureCollection>({
     queryKey: ['lgas'],
@@ -34,9 +36,10 @@ export default function MapView({ onLgaSelect, activeTileLayer, symbology, mapRe
     if (mapInitialised.current) return
     mapInitialised.current = true
     mapRef.current = L.map('map').fitBounds([[-38.5, 144.4], [-37.4, 145.8]])
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    basemapLayerRef.current = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '© OpenStreetMap contributors',
-    }).addTo(mapRef.current)
+    })
+    basemapLayerRef.current.addTo(mapRef.current)
     if (mapRefCallback) mapRefCallback(mapRef.current)
   }, [])
 
@@ -146,6 +149,48 @@ export default function MapView({ onLgaSelect, activeTileLayer, symbology, mapRe
     }
   }, [activeTileLayer])
 
+
+  // Swap basemap tiles when basemap prop changes
+  const TILE_URLS: Record<BasemapType, { url: string; attribution: string; maxZoom?: number }> = {
+    map: {
+      url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+      attribution: '© OpenStreetMap contributors',
+    },
+    satellite: {
+      url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      attribution: '© Esri, Maxar, Earthstar Geographics',
+      maxZoom: 19,
+    },
+    hybrid: {
+      url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      attribution: '© Esri, Maxar, Earthstar Geographics',
+      maxZoom: 19,
+    },
+  }
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+    if (basemapLayerRef.current) {
+      basemapLayerRef.current.remove()
+    }
+    const cfg = TILE_URLS[basemap]
+    basemapLayerRef.current = L.tileLayer(cfg.url, {
+      attribution: cfg.attribution,
+      maxZoom: cfg.maxZoom ?? 18,
+    })
+    basemapLayerRef.current.addTo(map)
+    basemapLayerRef.current.bringToBack()
+
+    // For hybrid: add a labels overlay on top
+    if (basemap === 'hybrid') {
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        opacity: 0.4,
+        attribution: '',
+      }).addTo(map)
+    }
+  }, [basemap])
+
   if (isError) return <div>Failed to load LGA boundaries.</div>
-  return <div id="map" style={{ height: '100vh', width: '100%' }} />
+  return <div id="map" style={{ height: '100%', width: '100%' }} />
 }
